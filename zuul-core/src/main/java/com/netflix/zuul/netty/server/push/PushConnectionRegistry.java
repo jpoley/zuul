@@ -15,14 +15,11 @@
  */
 package com.netflix.zuul.netty.server.push;
 
-import com.google.common.base.Charsets;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelHandlerContext;
 
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -35,17 +32,26 @@ import java.util.concurrent.ConcurrentMap;
 public class PushConnectionRegistry {
 
     private final ConcurrentMap<String, PushConnection> clientPushConnectionMap;
+    private final SecureRandom secureTokenGenerator;
 
     @Inject
     private PushConnectionRegistry() {
-        clientPushConnectionMap = new ConcurrentHashMap<>(1024 * 8);
+        clientPushConnectionMap = new ConcurrentHashMap<>(1024 * 32);
+        secureTokenGenerator = new SecureRandom();
     }
 
     public PushConnection get(final String clientId) {
         return clientPushConnectionMap.get(clientId);
     }
 
+    public String mintNewSecureToken() {
+        byte[] tokenBuffer = new byte[15];
+        secureTokenGenerator.nextBytes(tokenBuffer);
+        return Base64.getUrlEncoder().encodeToString(tokenBuffer);
+    }
+
     public void put(final String clientId, final PushConnection pushConnection) {
+        pushConnection.setSecureToken(mintNewSecureToken());
         clientPushConnectionMap.put(clientId, pushConnection);
     }
 
@@ -56,28 +62,6 @@ public class PushConnectionRegistry {
 
     public int size() {
         return clientPushConnectionMap.size();
-    }
-
-    public static class PushConnection {
-        private final PushProtocol pushProtocol;
-        private final ChannelHandlerContext ctx;
-
-        public PushConnection(PushProtocol pushProtocol, ChannelHandlerContext ctx) {
-            this.pushProtocol = pushProtocol;
-            this.ctx = ctx;
-        }
-
-        public ChannelFuture sendPushMessage(ByteBuf mesg) {
-            return pushProtocol.sendPushMessage(ctx, mesg);
-        }
-
-        public ChannelFuture sendPushMessage(String mesg) {
-            return sendPushMessage(Unpooled.copiedBuffer(mesg, Charsets.UTF_8));
-        }
-
-        public ChannelFuture sendPing() {
-            return pushProtocol.sendPing(ctx);
-        }
     }
 
 }

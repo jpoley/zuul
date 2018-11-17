@@ -15,6 +15,7 @@
  */
 package com.netflix.zuul.netty.server.push;
 
+import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import io.netty.buffer.ByteBuf;
@@ -23,7 +24,6 @@ import io.netty.handler.codec.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static com.netflix.zuul.netty.server.push.PushConnectionRegistry.PushConnection;
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
@@ -42,6 +42,7 @@ public abstract class PushMessageSender  extends SimpleChannelInboundHandler<Ful
 
     private final PushConnectionRegistry pushConnectionRegistry;
 
+    public static final String SECURE_TOKEN_HEADER_NAME = "X-Zuul.push.secure.token";
     private static final Logger logger = LoggerFactory.getLogger(PushMessageSender.class);
 
 
@@ -62,8 +63,17 @@ public abstract class PushMessageSender  extends SimpleChannelInboundHandler<Ful
         logPushEvent(request, status, userAuth);
     }
 
+    protected boolean verifySecureToken(final FullHttpRequest request, final PushConnection conn) {
+        final String secureToken = request.headers().get(SECURE_TOKEN_HEADER_NAME);
+        if (Strings.isNullOrEmpty(secureToken)) {
+            // caller is not asking to verify secure token
+            return true;
+        }
+        return secureToken.equals(conn.getSecureToken());
+    }
 
-    @Override
+
+        @Override
     protected void channelRead0(final ChannelHandlerContext ctx, final FullHttpRequest request) throws Exception {
         if (!request.decoderResult().isSuccess()) {
             sendHttpResponse(ctx, request, BAD_REQUEST, null);
@@ -100,6 +110,12 @@ public abstract class PushMessageSender  extends SimpleChannelInboundHandler<Ful
                 return;
             }
 
+            if (! verifySecureToken(request, pushConn)) {
+                sendHttpResponse(ctx, request, FORBIDDEN, userAuth);
+                logSecurityTokenVerificationFail();
+                return;
+            }
+
             if (method == HttpMethod.GET) {
                 //client only checking if particular CID + ESN is connected to this instance
                 sendHttpResponse(ctx, request, OK, userAuth);
@@ -109,6 +125,12 @@ public abstract class PushMessageSender  extends SimpleChannelInboundHandler<Ful
             final ByteBuf body = request.content().retain();
             if (body.readableBytes() <= 0) {
                 sendHttpResponse(ctx, request, NO_CONTENT, userAuth);
+                return;
+            }
+
+            if (pushConn.isRateLimited()) {
+                sendHttpResponse(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, userAuth);
+                logRateLimited();
                 return;
             }
 
@@ -151,11 +173,21 @@ public abstract class PushMessageSender  extends SimpleChannelInboundHandler<Ful
         logger.debug("pushing notification error", t);
     }
 
+    protected void logRateLimited() {
+        logger.warn("Push message was rejected because of the rate limiting");
+    }
+
+    protected void logSecurityTokenVerificationFail() {
+        logger.warn("Push secure token verification failed");
+    }
+
     protected void logPushEvent(FullHttpRequest request, HttpResponseStatus status, PushUserAuth userAuth) {
         logger.debug("Push notification status: {}, auth: {}", status.code(), userAuth != null ? userAuth : "-");
     }
 
     protected abstract PushUserAuth getPushUserAuth(FullHttpRequest request);
+
+
 
 
 
