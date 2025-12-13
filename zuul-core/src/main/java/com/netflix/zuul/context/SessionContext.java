@@ -15,37 +15,42 @@
  */
 package com.netflix.zuul.context;
 
-/**
- * User: Mike Smith
- * Date: 4/28/15
- * Time: 6:45 PM
- */
-
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.netflix.config.DynamicPropertyFactory;
 import com.netflix.zuul.filters.FilterError;
 import com.netflix.zuul.message.http.HttpResponseMessage;
-import com.netflix.zuul.stats.Timings;
-import com.netflix.zuul.util.DeepCopy;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.runners.MockitoJUnitRunner;
-
-import java.io.NotSerializableException;
+import jakarta.annotation.Nullable;
 import java.net.URL;
-import java.util.*;
-
-import static org.junit.Assert.assertEquals;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Supplier;
+import lombok.NonNull;
 
 /**
  * Represents the context between client and origin server for the duration of the dedicated connection/session
  * between them. But we're currently still only modelling single request/response pair per session.
  *
  * NOTE: Not threadsafe, and not intended to be used concurrently.
+ *
+ * User: Mike Smith
+ * Date: 4/28/15
+ * Time: 6:45 PM
  */
-public class SessionContext extends HashMap<String, Object> implements Cloneable
-{
-    private static final int INITIAL_SIZE =
-            DynamicPropertyFactory.getInstance().getIntProperty("com.netflix.zuul.context.SessionContext.initialSize", 60).get();
+public final class SessionContext extends HashMap<String, Object> implements Cloneable {
+    private static final int INITIAL_SIZE = DynamicPropertyFactory.getInstance()
+            .getIntProperty("com.netflix.zuul.context.SessionContext.initialSize", 60)
+            .get();
+
+    private static final int EVENT_PROPERTIES_INITIAL_SIZE = DynamicPropertyFactory.getInstance()
+            .getIntProperty("com.netflix.zuul.context.SessionContext.eventProperties.initialSize", 128)
+            .get();
 
     private boolean brownoutMode = false;
     private boolean shouldStopFilterProcessing = false;
@@ -56,9 +61,6 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     private boolean debugRequestHeadersOnly = false;
     private boolean cancelled = false;
 
-    private Timings timings = new Timings();
-
-
     private static final String KEY_UUID = "_uuid";
     private static final String KEY_VIP = "routeVIP";
     private static final String KEY_ENDPOINT = "_endpoint";
@@ -68,37 +70,215 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     private static final String KEY_FILTER_ERRORS = "_filter_errors";
     private static final String KEY_FILTER_EXECS = "_filter_executions";
 
-    public SessionContext()
-    {
+    private final IdentityHashMap<Key<?>, ?> typedMap = new IdentityHashMap<>();
+
+    /**
+     * A Key is type-safe, identity-based key into the Session Context.
+     * @param <T>
+     */
+    public static final class Key<T> {
+
+        private final String name;
+        private final Supplier<T> defaultValueSupplier;
+
+        private Key(String name, Supplier<T> defaultValueSupplier) {
+            this.name = Objects.requireNonNull(name, "name");
+            this.defaultValueSupplier = defaultValueSupplier;
+        }
+
+        @Override
+        public String toString() {
+            return "Key{" + name + '}';
+        }
+
+        public String name() {
+            return name;
+        }
+
+        /**
+         * This method exists solely to indicate that Keys are based on identity and not name.
+         */
+        @Override
+        public boolean equals(Object o) {
+            return super.equals(o);
+        }
+
+        /**
+         * This method exists solely to indicate that Keys are based on identity and not name.
+         */
+        @Override
+        public int hashCode() {
+            return super.hashCode();
+        }
+
+        public T defaultValue() {
+            return defaultValueSupplier != null ? defaultValueSupplier.get() : null;
+        }
+    }
+
+    @SuppressWarnings("UnnecessaryStringBuilder")
+    public SessionContext() {
         // Use a higher than default initial capacity for the hashmap as we generally have more than the default
         // 16 entries.
         super(INITIAL_SIZE);
 
         put(KEY_FILTER_EXECS, new StringBuilder());
-        put(KEY_EVENT_PROPS, new HashMap<String, Object>());
+        put(KEY_EVENT_PROPS, new HashMap<String, Object>(EVENT_PROPERTIES_INITIAL_SIZE));
         put(KEY_FILTER_ERRORS, new ArrayList<FilterError>());
+    }
+
+    public static <T> Key<T> newKey(String name) {
+        return newKey(name, null);
+    }
+
+    public static <T> Key<T> newKey(String name, Supplier<T> defaultValueSupplier) {
+        return new Key<>(name, defaultValueSupplier);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method exists for static analysis.
+     */
+    @Override
+    public Object get(Object key) {
+        return super.get(key);
+    }
+
+    /**
+     * Returns the value in the context, or {@code null} if absent.
+     */
+    @SuppressWarnings("unchecked")
+    @Nullable
+    public <T> T get(@NonNull Key<T> key) {
+        T value = (T) typedMap.get(key);
+        if (value == null) {
+            value = key.defaultValue();
+        }
+
+        return value;
+    }
+
+    /**
+     * Returns the value in the context, or default value from the
+     * typed key default value supplier if absent.
+     */
+    @NonNull
+    public <T> T getOrDefault(@NonNull Key<T> key) {
+        return Objects.requireNonNull(this.get(key), "expected non-null value or defaultValue supplier");
+    }
+
+    /**
+     * Returns the value in the context, or {@code defaultValue} if absent.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T getOrDefault(Key<T> key, T defaultValue) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(defaultValue, "defaultValue");
+        T value = (T) typedMap.get(Objects.requireNonNull(key));
+        if (value != null) {
+            return value;
+        }
+        return defaultValue;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method exists for static analysis.
+     */
+    @Override
+    public boolean containsKey(Object key) {
+        return super.containsKey(key);
+    }
+
+    /**
+     * Checks for the existence of the key in the context.
+     */
+    public <T> boolean containsKey(Key<T> key) {
+        return typedMap.containsKey(Objects.requireNonNull(key, "key"));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method exists for static analysis.
+     */
+    @Override
+    public Object put(String key, Object value) {
+        return super.put(key, value);
+    }
+
+    /**
+     * Returns the previous value associated with key, or {@code null} if there was no mapping for key.  Unlike
+     * {@link #put(String, Object)}, this will never return a null value if the key is present in the map.
+     */
+    @Nullable
+    @CanIgnoreReturnValue
+    public <T> T put(Key<T> key, T value) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(value, "value");
+
+        @SuppressWarnings("unchecked") // Sorry.
+        T res = ((Map<Key<T>, T>) (Map) typedMap).put(key, value);
+        return res;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method exists for static analysis.
+     */
+    @Override
+    public boolean remove(Object key, Object value) {
+        return super.remove(key, value);
+    }
+
+    public <T> boolean remove(Key<T> key, T value) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(value, "value");
+        @SuppressWarnings("unchecked") // sorry
+        boolean res = ((Map<Key<T>, T>) (Map) typedMap).remove(key, value);
+        return res;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method exists for static analysis.
+     */
+    @Override
+    public Object remove(Object key) {
+        return super.remove(key);
+    }
+
+    public <T> T remove(Key<T> key) {
+        Objects.requireNonNull(key, "key");
+        @SuppressWarnings("unchecked") // sorry
+        T res = ((Map<Key<T>, T>) (Map) typedMap).remove(key);
+        return res;
+    }
+
+    public Set<Key<?>> keys() {
+        return Collections.unmodifiableSet(new HashSet<>(typedMap.keySet()));
     }
 
     /**
      * Makes a copy of the RequestContext. This is used for debugging.
-     *
-     * @return
      */
     @Override
-    public SessionContext clone()
-    {
+    public SessionContext clone() {
+        // TODO(carl-mastrangelo): copy over the type safe keys
         return (SessionContext) super.clone();
     }
 
-    public String getString(String key)
-    {
+    public String getString(String key) {
         return (String) get(key);
     }
 
     /**
      * Convenience method to return a boolean value for a given key
      *
-     * @param key
      * @return true or false depending what was set. default is false
      */
     public boolean getBoolean(String key) {
@@ -108,22 +288,18 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     /**
      * Convenience method to return a boolean value for a given key
      *
-     * @param key
-     * @param defaultResponse
      * @return true or false depending what was set. default defaultResponse
      */
     public boolean getBoolean(String key, boolean defaultResponse) {
         Boolean b = (Boolean) get(key);
         if (b != null) {
-            return b.booleanValue();
+            return b;
         }
         return defaultResponse;
     }
 
     /**
      * sets a key value to Boolean.TRUE
-     *
-     * @param key
      */
     public void set(String key) {
         put(key, Boolean.TRUE);
@@ -132,67 +308,27 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     /**
      * puts the key, value into the map. a null value will remove the key from the map
      *
-     * @param key
-     * @param value
      */
     public void set(String key, Object value) {
-        if (value != null) put(key, value);
-        else remove(key);
-    }
-
-    /**
-     * Makes a copy of the SessionContext. This is used for debugging.
-     *
-     * @return
-     */
-    public SessionContext copy()
-    {
-        SessionContext copy = new SessionContext();
-        copy.brownoutMode = brownoutMode;
-        copy.cancelled = cancelled;
-        copy.shouldStopFilterProcessing = shouldStopFilterProcessing;
-        copy.shouldSendErrorResponse = shouldSendErrorResponse;
-        copy.errorResponseSent = errorResponseSent;
-        copy.debugRouting = debugRouting;
-        copy.debugRequest = debugRequest;
-        copy.debugRequestHeadersOnly = debugRequestHeadersOnly;
-        copy.timings = timings;
-
-        Iterator<String> it = keySet().iterator();
-        String key = it.next();
-        while (key != null) {
-            Object orig = get(key);
-            try {
-                Object copyValue = DeepCopy.copy(orig);
-                if (copyValue != null) {
-                    copy.set(key, copyValue);
-                } else {
-                    copy.set(key, orig);
-                }
-            } catch (NotSerializableException e) {
-                copy.set(key, orig);
-            }
-            if (it.hasNext()) {
-                key = it.next();
-            } else {
-                key = null;
-            }
+        if (value != null) {
+            put(key, value);
+        } else {
+            remove(key);
         }
-        return copy;
     }
 
-    public String getUUID()
-    {
+    public String getUUID() {
         return getString(KEY_UUID);
     }
-    public void setUUID(String uuid)
-    {
+
+    public void setUUID(String uuid) {
         set(KEY_UUID, uuid);
     }
 
     public void setStaticResponse(HttpResponseMessage response) {
         set(KEY_STATIC_RESPONSE, response);
     }
+
     public HttpResponseMessage getStaticResponse() {
         return (HttpResponseMessage) get(KEY_STATIC_RESPONSE);
     }
@@ -200,34 +336,28 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     /**
      * Gets the throwable that will be use in the Error endpoint.
      *
-     * @return a set throwable
      */
     public Throwable getError() {
         return (Throwable) get("_error");
-
     }
 
     /**
      * Sets throwable to use for generating a response in the Error endpoint.
-     *
-     * @param th
      */
     public void setError(Throwable th) {
         put("_error", th);
-
     }
 
     public String getErrorEndpoint() {
         return (String) get("_error-endpoint");
     }
+
     public void setErrorEndpoint(String name) {
         put("_error-endpoint", name);
     }
 
     /**
      * sets  debugRouting
-     *
-     * @param bDebug
      */
     public void setDebugRouting(boolean bDebug) {
         this.debugRouting = bDebug;
@@ -243,11 +373,9 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     /**
      * sets "debugRequestHeadersOnly" to bHeadersOnly
      *
-     * @param bHeadersOnly
      */
     public void setDebugRequestHeadersOnly(boolean bHeadersOnly) {
         this.debugRequestHeadersOnly = bHeadersOnly;
-
     }
 
     /**
@@ -259,8 +387,6 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
 
     /**
      * sets "debugRequest"
-     *
-     * @param bDebug
      */
     public void setDebugRequest(boolean bDebug) {
         this.debugRequest = bDebug;
@@ -304,8 +430,16 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
      */
     public void addFilterExecutionSummary(String name, String status, long time) {
         StringBuilder sb = getFilterExecutionSummary();
-        if (sb.length() > 0) sb.append(", ");
-        sb.append(name).append('[').append(status).append(']').append('[').append(time).append("ms]");
+        if (sb.length() > 0) {
+            sb.append(", ");
+        }
+        sb.append(name)
+                .append('[')
+                .append(status)
+                .append(']')
+                .append('[')
+                .append(time)
+                .append("ms]");
     }
 
     /**
@@ -315,8 +449,6 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
         return (StringBuilder) get(KEY_FILTER_EXECS);
     }
 
-
-
     public boolean shouldSendErrorResponse() {
         return this.shouldSendErrorResponse;
     }
@@ -325,34 +457,44 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
      * Set this to true to indicate that the Error endpoint should be applied after
      * the end of the current filter processing phase.
      *
-     * @param should
      */
     public void setShouldSendErrorResponse(boolean should) {
         this.shouldSendErrorResponse = should;
     }
 
-
     public boolean errorResponseSent() {
         return this.errorResponseSent;
     }
+
     public void setErrorResponseSent(boolean should) {
         this.errorResponseSent = should;
     }
-
 
     /**
      * This can be used by filters for flagging if the server is getting overloaded, and then choose
      * to disable/sample/rate-limit some optional features.
      *
-     * @return
      */
-    public boolean isInBrownoutMode()
-    {
+    public boolean isInBrownoutMode() {
         return brownoutMode;
     }
-    public void setInBrownoutMode()
-    {
+
+    /**
+     * Flag the server is getting overloaded.
+     * @deprecated use setInBrownoutMode(String reason)
+     */
+    @Deprecated
+    public void setInBrownoutMode() {
         this.brownoutMode = true;
+    }
+
+    public void setInBrownoutMode(@NonNull String reason) {
+        this.brownoutMode = true;
+        put(CommonContextKeys.BROWNOUT_REASON, reason);
+    }
+
+    public @Nullable String getBrownoutReason() {
+        return get(CommonContextKeys.BROWNOUT_REASON);
     }
 
     /**
@@ -362,6 +504,7 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     public void stopFilterProcessing() {
         shouldStopFilterProcessing = true;
     }
+
     public boolean shouldStopFilterProcessing() {
         return shouldStopFilterProcessing;
     }
@@ -369,7 +512,6 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
     /**
      * returns the routeVIP; that is the Eureka "vip" of registered instances
      *
-     * @return
      */
     public String getRouteVIP() {
         return (String) get(KEY_VIP);
@@ -377,20 +519,16 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
 
     /**
      * sets routeVIP; that is the Eureka "vip" of registered instances
-     *
-     * @return
      */
-
     public void setRouteVIP(String sVip) {
         set(KEY_VIP, sVip);
     }
 
-    public void setEndpoint(String endpoint)
-    {
+    public void setEndpoint(String endpoint) {
         put(KEY_ENDPOINT, endpoint);
     }
-    public String getEndpoint()
-    {
+
+    public String getEndpoint() {
         return (String) get(KEY_ENDPOINT);
     }
 
@@ -406,17 +544,11 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
         return (List<FilterError>) get(KEY_FILTER_ERRORS);
     }
 
-    public Timings getTimings()
-    {
-        return timings;
-    }
-
-    public void setOriginReportedDuration(int duration)
-    {
+    public void setOriginReportedDuration(int duration) {
         put("_originReportedDuration", duration);
     }
-    public int getOriginReportedDuration()
-    {
+
+    public int getOriginReportedDuration() {
         Object value = get("_originReportedDuration");
         if (value != null) {
             return (Integer) value;
@@ -430,18 +562,5 @@ public class SessionContext extends HashMap<String, Object> implements Cloneable
 
     public void cancel() {
         this.cancelled = true;
-    }
-
-    @RunWith(MockitoJUnitRunner.class)
-    public static class UnitTest
-    {
-        @Test
-        public void testBoolean()
-        {
-            SessionContext context = new SessionContext();
-            assertEquals(context.getBoolean("boolean_test"), Boolean.FALSE);
-            assertEquals(context.getBoolean("boolean_test", true), true);
-
-        }
     }
 }

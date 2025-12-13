@@ -20,8 +20,7 @@ import com.netflix.zuul.context.CommonContextKeys;
 import com.netflix.zuul.context.SessionContext;
 import com.netflix.zuul.message.ZuulMessage;
 import com.netflix.zuul.message.http.HttpResponseMessage;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import javax.annotation.Nullable;
 
 /**
  * User: michaels@netflix.com
@@ -29,22 +28,57 @@ import org.slf4j.LoggerFactory;
  * Time: 2:48 PM
  */
 public class StatusCategoryUtils {
-    private static final Logger LOG = LoggerFactory.getLogger(StatusCategoryUtils.class);
 
     public static StatusCategory getStatusCategory(ZuulMessage msg) {
         return getStatusCategory(msg.getContext());
     }
 
+    @Nullable
     public static StatusCategory getStatusCategory(SessionContext ctx) {
-        return (StatusCategory) ctx.get(CommonContextKeys.STATUS_CATGEORY);
+        return ctx.get(CommonContextKeys.STATUS_CATEGORY);
+    }
+
+    @Nullable
+    public static String getStatusCategoryReason(SessionContext ctx) {
+        return ctx.get(CommonContextKeys.STATUS_CATEGORY_REASON);
     }
 
     public static void setStatusCategory(SessionContext ctx, StatusCategory statusCategory) {
-        ctx.set(CommonContextKeys.STATUS_CATGEORY, statusCategory);
+        setStatusCategory(ctx, statusCategory, statusCategory.getReason());
     }
 
+    public static void setStatusCategory(SessionContext ctx, StatusCategory statusCategory, String reason) {
+        ctx.put(CommonContextKeys.STATUS_CATEGORY, statusCategory);
+        ctx.put(CommonContextKeys.STATUS_CATEGORY_REASON, reason);
+    }
+
+    public static void clearStatusCategory(SessionContext ctx) {
+        ctx.remove(CommonContextKeys.STATUS_CATEGORY);
+        ctx.remove(CommonContextKeys.STATUS_CATEGORY_REASON);
+    }
+
+    @Nullable
     public static StatusCategory getOriginStatusCategory(SessionContext ctx) {
-        return (StatusCategory) ctx.get(CommonContextKeys.ORIGIN_STATUS_CATEGORY);
+        return ctx.get(CommonContextKeys.ORIGIN_STATUS_CATEGORY);
+    }
+
+    @Nullable
+    public static String getOriginStatusCategoryReason(SessionContext ctx) {
+        return ctx.get(CommonContextKeys.ORIGIN_STATUS_CATEGORY_REASON);
+    }
+
+    public static void setOriginStatusCategory(SessionContext ctx, StatusCategory statusCategory) {
+        setOriginStatusCategory(ctx, statusCategory, statusCategory.getReason());
+    }
+
+    public static void setOriginStatusCategory(SessionContext ctx, StatusCategory statusCategory, String reason) {
+        ctx.put(CommonContextKeys.ORIGIN_STATUS_CATEGORY, statusCategory);
+        ctx.put(CommonContextKeys.ORIGIN_STATUS_CATEGORY_REASON, reason);
+    }
+
+    public static void clearOriginStatusCategory(SessionContext ctx) {
+        ctx.remove(CommonContextKeys.ORIGIN_STATUS_CATEGORY);
+        ctx.remove(CommonContextKeys.ORIGIN_STATUS_CATEGORY_REASON);
     }
 
     public static boolean isResponseHttpErrorStatus(HttpResponseMessage response) {
@@ -60,11 +94,11 @@ public class StatusCategoryUtils {
         return (status < 100 || status >= 500);
     }
 
-    public static void storeStatusCategoryIfNotAlreadyFailure(final SessionContext context, final StatusCategory statusCategory) {
+    public static void storeStatusCategoryIfNotAlreadyFailure(SessionContext context, StatusCategory statusCategory) {
         if (statusCategory != null) {
-            final StatusCategory nfs = (StatusCategory) context.get(CommonContextKeys.STATUS_CATGEORY);
+            StatusCategory nfs = getStatusCategory(context);
             if (nfs == null || nfs.getGroup().getId() == ZuulStatusCategoryGroup.SUCCESS.getId()) {
-                context.set(CommonContextKeys.STATUS_CATGEORY, statusCategory);
+                setStatusCategory(context, statusCategory);
             }
         }
     }

@@ -16,104 +16,70 @@
 
 package com.netflix.netty.common.proxyprotocol;
 
-import com.netflix.config.CachedDynamicBooleanProperty;
-import com.netflix.config.DynamicIntProperty;
+import com.google.common.base.Preconditions;
 import com.netflix.netty.common.SourceAddressChannelHandler;
-import io.netty.channel.Channel;
+import com.netflix.spectator.api.Registry;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
-import io.netty.handler.codec.haproxy.HAProxyMessage;
-import io.netty.handler.codec.haproxy.HAProxyProtocolVersion;
-import io.netty.handler.codec.haproxy.HAProxyTLV;
-import io.netty.util.AttributeKey;
-
-import java.util.List;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import io.netty.handler.codec.ProtocolDetectionState;
+import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
 
 /**
- * Copies any decoded HAProxyMessage into the channel attributes, and doesn't pass
- * it any further along the pipeline.
- *
- * Use in conjunction with OptionalHAProxyMessageDecoder if ProxyProtocol is enabled on the ELB.
- *
- * User: michaels@netflix.com
- * Date: 3/24/16
- * Time: 11:59 AM
+ * Decides if we need to decode a HAProxyMessage. If so, adds the decoder followed by the handler.
+ * Else, removes itself from the pipeline.
  */
-public class ElbProxyProtocolChannelHandler extends ChannelInboundHandlerAdapter
-{
-    public static final String NAME = "ElbProxyProtocolChannelHandler";
-    public static final AttributeKey<HAProxyMessage> ATTR_HAPROXY_MESSAGE = AttributeKey.newInstance("_haproxy_message");
-    public static final AttributeKey<HAProxyProtocolVersion> ATTR_HAPROXY_VERSION = AttributeKey.newInstance("_haproxy_version");
+public final class ElbProxyProtocolChannelHandler extends ChannelInboundHandlerAdapter {
 
-    private static final Logger logger = LoggerFactory.getLogger("ElbProxyProtocolChannelHandler");
-
+    public static final String NAME = ElbProxyProtocolChannelHandler.class.getSimpleName();
     private final boolean withProxyProtocol;
+    private final Registry registry;
 
-    public ElbProxyProtocolChannelHandler(boolean withProxyProtocol)
-    {
+    public ElbProxyProtocolChannelHandler(Registry registry, boolean withProxyProtocol) {
         this.withProxyProtocol = withProxyProtocol;
+        this.registry = Preconditions.checkNotNull(registry);
     }
 
-    /**
-     * Setup the required handlers on pipeline using this method.
-     *
-     * @param pipeline
-     */
-    public void addProxyProtocol(ChannelPipeline pipeline)
-    {
+    public void addProxyProtocol(ChannelPipeline pipeline) {
         pipeline.addLast(NAME, this);
-
-        if (withProxyProtocol) {
-            pipeline.addBefore(NAME, OptionalHAProxyMessageDecoder.NAME, new OptionalHAProxyMessageDecoder());
-        }
     }
 
     @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
-    {
-        if (withProxyProtocol) {
-            if (msg instanceof HAProxyMessage && msg != null) {
-                HAProxyMessage hapm = (HAProxyMessage) msg;
-                Channel channel = ctx.channel();
-                channel.attr(ATTR_HAPROXY_MESSAGE).set(hapm);
-                channel.attr(ATTR_HAPROXY_VERSION).set(hapm.protocolVersion());
-                // Get the real host and port that the client connected to ELB with.
-                String destinationAddress = hapm.destinationAddress();
-                if (destinationAddress != null) {
-                    channel.attr(SourceAddressChannelHandler.ATTR_LOCAL_ADDRESS).set(destinationAddress);
-                    channel.attr(SourceAddressChannelHandler.ATTR_LOCAL_PORT).set(hapm.destinationPort());
-                }
-
-                // Get the real client IP from the ProxyProtocol message sent by the ELB, and overwrite the SourceAddress
-                // channel attribute.
-                String sourceAddress = hapm.sourceAddress();
-                if (sourceAddress != null) {
-                    channel.attr(SourceAddressChannelHandler.ATTR_SOURCE_ADDRESS).set(sourceAddress);
-                    channel.attr(SourceAddressChannelHandler.ATTR_SOURCE_PORT).set(hapm.sourcePort());
-                }
-
-                // PPV2 passes dynamic fields in TLV format which
-                // HAProxyMessage decodes into bytebufs retaining
-                // refCounts..call release to avoid bytebuf leaks
-                List<HAProxyTLV> haProxyTLVList = hapm.tlvs();
-                if (haProxyTLVList != null) {
-                    logger.debug("Decoded PPV2 TLV list count: {}, List: {}", haProxyTLVList.size(), haProxyTLVList);
-                    for (int i = 0; i < haProxyTLVList.size(); i++) {
-                        HAProxyTLV haProxyTLV = haProxyTLVList.get(i);
-                        haProxyTLV.release();
-                    }
-                }
-
-                // TODO - fire an additional event to notify interested parties that we now know the IP?
-
-                // Remove ourselves (this handler) from the channel now, as no more work to do.
-                ctx.pipeline().remove(this);
-            }
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        if (!withProxyProtocol) {
+            ctx.pipeline().remove(this);
+            super.channelRead(ctx, msg);
+            return;
         }
 
+        ProtocolDetectionState haProxyState = getDetectionState(msg);
+        if (haProxyState == ProtocolDetectionState.DETECTED) {
+            ctx.pipeline()
+                    .addAfter(NAME, null, new HAProxyMessageChannelHandler())
+                    .replace(this, null, new HAProxyMessageDecoder());
+        } else {
+            int port = ctx.channel()
+                    .attr(SourceAddressChannelHandler.ATTR_SERVER_LOCAL_PORT)
+                    .get();
+
+            // This likely means initialization was requested with proxy protocol, but we encountered a non-ppv2
+            // message
+            registry.counter(
+                            "zuul.hapm.decode",
+                            "success",
+                            "false",
+                            "port",
+                            String.valueOf(port),
+                            "needs_more_data",
+                            String.valueOf(haProxyState == ProtocolDetectionState.NEEDS_MORE_DATA))
+                    .increment();
+            ctx.pipeline().remove(this);
+        }
         super.channelRead(ctx, msg);
+    }
+
+    private ProtocolDetectionState getDetectionState(Object msg) {
+        return HAProxyMessageDecoder.detectProtocol((ByteBuf) msg).state();
     }
 }

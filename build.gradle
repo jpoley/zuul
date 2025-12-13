@@ -1,24 +1,16 @@
-
-// This buildscript is a hack to get around a conflict between different versions of nebula used in this
-// project vs internally at netflix. Once some transitive versions of netflixoss get uptodate, then this can
-// be removed.
-// And note that the error seen without this is:
-//    java.lang.NoClassDefFoundError: org/jfrog/gradle/plugin/artifactory/task/BuildInfoBaseTask
 buildscript {
     dependencies {
-        classpath 'com.netflix.nebula:gradle-extra-configurations-plugin:3.+'
-    }
-    configurations.classpath {
-        resolutionStrategy {
-            force 'org.jfrog.buildinfo:build-info-extractor-gradle:4.4.7'
-        }
+        classpath 'com.palantir.javaformat:gradle-palantir-java-format:2.74.0'
     }
 }
 
 plugins {
-    id 'nebula.netflixoss' version '4.1.0'
-    id 'nebula.dependency-lock' version '4.1.0'
-    id "com.google.osdetector" version "1.4.0"
+    id 'com.netflix.nebula.netflixoss' version '11.6.0'
+    id "com.google.osdetector" version '1.7.3'
+    id 'me.champeau.jmh' version '0.7.2'
+    id 'org.openrewrite.rewrite' version '7.12.1'
+    id 'net.ltgt.errorprone' version '4.1.0'
+    id 'com.diffplug.spotless' version "6.25.0"
 }
 
 ext.githubProjectName = rootProject.name
@@ -26,7 +18,7 @@ ext.githubProjectName = rootProject.name
 
 idea {
     project {
-        languageLevel = '1.8'
+        languageLevel = '21'
     }
 }
 
@@ -35,41 +27,76 @@ configurations.all {
     exclude group: 'asm', module: 'asm-all'
 }
 
+allprojects {
+    repositories {
+        mavenCentral()
+    }
+
+    apply plugin: 'com.diffplug.spotless'
+
+    spotless {
+        enforceCheck false
+        java {
+            rootProject.hasProperty('spotlessJavaTarget') ? target(rootProject.getProperty('spotlessJavaTarget').split(",")) : target('src/*/java/**/*.java')
+            removeUnusedImports('cleanthat-javaparser-unnecessaryimport')
+            palantirJavaFormat()
+        }
+    }
+}
 
 subprojects {
-    apply plugin: 'nebula.netflixoss'
+    apply plugin: 'com.netflix.nebula.netflixoss'
     apply plugin: 'java'
-    apply plugin: 'groovy'
-    apply plugin: 'nebula.javadoc-jar'
-    apply plugin: 'nebula.dependency-lock'
+    apply plugin: 'com.netflix.nebula.javadoc-jar'
+    apply plugin: 'com.netflix.nebula.dependency-lock'
+    apply plugin: 'me.champeau.jmh'
+    apply plugin: 'org.openrewrite.rewrite'
+    apply plugin: 'net.ltgt.errorprone'
 
-    repositories {
-        jcenter()
+    license {
+        ignoreFailures = false
+        excludes([
+                "**/META-INF/services/javax.annotation.processing.Processor",
+                "**/META-INF/gradle/incremental.annotation.processors",
+                "**/*.cert",
+                "**/*.jks",
+                "**/*.key",
+        ])
     }
 
     group = "com.netflix.${githubProjectName}"
 
-    sourceCompatibility = '1.8'
+    sourceCompatibility = '21'
+    targetCompatibility = '21'
 
-    sourceSets {
-        test {
-            java {
-                srcDirs  = ['src/main/java', 'src/test/java']
-                include '**/*.java'
-            }
-            groovy {
-                srcDirs  = ['filters', 'src/main/groovy']
-                include '**/*.groovy'
-            }
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
         }
     }
 
-    javadoc {
-        options {
-            doclet = "org.benjchristensen.doclet.DocletExclude"
-            docletpath = [rootProject.file('./gradle/doclet-exclude.jar')]
-            stylesheetFile = rootProject.file('./gradle/javadocStyleSheet.css')
-            windowTitle = "Zuul Javadoc ${project.version}"
+    tasks.withType(JavaCompile).configureEach {
+        dependencies {
+            errorprone "com.uber.nullaway:nullaway:0.12.4"
+            errorprone "com.google.errorprone:error_prone_core:2.36.0"
+        }
+
+        options.compilerArgs << "-Werror"
+
+        options.errorprone {
+            check("NullAway", net.ltgt.gradle.errorprone.CheckSeverity.OFF)
+            option("NullAway:AnnotatedPackages", "com.netflix.zuul")
+            errorproneArgs.addAll(
+                // Uncomment and remove -Werror javac flag to automatically apply fixes for a check.
+                // N.B: disables all other checks while enabled.
+                // "-XepPatchChecks:UnnecessaryParentheses",
+                // "-XepPatchLocation:IN_PLACE",
+                "-Xep:ClassCanBeStatic:OFF",
+                "-Xep:EmptyBlockTag:OFF",
+                "-Xep:FutureReturnValueIgnored:OFF",
+                "-Xep:InlineMeSuggester:OFF",
+                "-Xep:MissingSummary:OFF",
+            )
         }
     }
 
@@ -82,24 +109,46 @@ subprojects {
 
     tasks.withType(Javadoc).each {
         it.classpath = sourceSets.main.compileClasspath
+        // Ignore Javadoc warnings for now, re-enable after Zuul 3.
+        it.options.addStringOption('Xdoclint:none', '-quiet')
     }
 
-    dependencies {
-        ext.versions_guice = "4.0"
+    ext {
+        libraries = [
+                guava: "com.google.guava:guava:33.3.0-jre",
+                okhttp: 'com.squareup.okhttp3:okhttp:4.12.0',
+                jupiterApi: 'org.junit.jupiter:junit-jupiter-api:5.13.+',
+                jupiterParams: 'org.junit.jupiter:junit-jupiter-params:5.13.+',
+                jupiterEngine: 'org.junit.jupiter:junit-jupiter-engine:5.13.+',
+                junitPlatformLauncher: 'org.junit.platform:junit-platform-launcher:1.13.+',
+                jupiterMockito: 'org.mockito:mockito-junit-jupiter:5.13.+',
+                mockito: 'org.mockito:mockito-core:5.+',
 
-        // Use guice-4 while debugging a startup error that is hidden by guice-3's lack of java8 lambda support.
-        compile(group: 'com.google.inject', name: 'guice', version: "${versions_guice}")
-        compile(group: 'com.google.inject.extensions', name: 'guice-multibindings', version: "${versions_guice}")
-        compile(group: 'com.google.inject.extensions', name: 'guice-grapher', version: "${versions_guice}")
-        compile(group: 'com.google.inject.extensions', name: 'guice-assistedinject', version: "${versions_guice}")
-        compile(group: 'com.google.inject.extensions', name: 'guice-servlet', version: "${versions_guice}")
-        compile(group: 'com.google.inject.extensions', name: 'guice-throwingproviders', version: "${versions_guice}")
+                slf4j: "org.slf4j:slf4j-api:2.0.16",
+                assertj: 'org.assertj:assertj-core:3.26.3',
+                awaitility: 'org.awaitility:awaitility:4.2.2',
+                lombok: 'org.projectlombok:lombok:1.18.42'
+        ]
     }
-
 
     test {
+        useJUnitPlatform()
         testLogging {
             showStandardStreams = true
         }
+        maxParallelForks = Runtime.runtime.availableProcessors();
     }
+}
+
+dependencies {
+    rewrite(platform("org.openrewrite.recipe:rewrite-recipe-bom:3.12.1"))
+    rewrite("org.openrewrite.recipe:rewrite-logging-frameworks")
+    rewrite("org.openrewrite.recipe:rewrite-testing-frameworks")
+    rewrite("org.openrewrite.recipe:rewrite-static-analysis")
+}
+
+rewrite {
+    failOnDryRunResults = true
+    activeRecipe("org.openrewrite.java.testing.junit5.JUnit5BestPractices")
+    activeRecipe("org.openrewrite.java.logging.slf4j.Slf4jBestPractices")
 }

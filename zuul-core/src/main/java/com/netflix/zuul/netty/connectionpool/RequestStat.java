@@ -16,8 +16,8 @@
 
 package com.netflix.zuul.netty.connectionpool;
 
-import com.netflix.loadbalancer.Server;
 import com.netflix.zuul.context.SessionContext;
+import com.netflix.zuul.discovery.DiscoveryResult;
 import com.netflix.zuul.exception.ErrorType;
 
 /**
@@ -30,18 +30,16 @@ public interface RequestStat {
 
     String SESSION_CONTEXT_KEY = "niwsRequestStat";
 
-    static RequestStat putInSessionContext(RequestStat stat, SessionContext context)
-    {
+    static RequestStat putInSessionContext(RequestStat stat, SessionContext context) {
         context.put(SESSION_CONTEXT_KEY, stat);
         return stat;
     }
 
-    static RequestStat getFromSessionContext(SessionContext context)
-    {
+    static RequestStat getFromSessionContext(SessionContext context) {
         return (RequestStat) context.get(SESSION_CONTEXT_KEY);
     }
 
-    RequestStat server(Server server);
+    RequestStat server(DiscoveryResult server);
 
     boolean isFinished();
 
@@ -49,13 +47,13 @@ public interface RequestStat {
 
     void serviceUnavailable();
 
-    void nextServerRetriesExceeded();
-
     void generalError();
 
-    void failAndSetErrorCode(String error);
+    void failAndSetErrorCode(ErrorType errorType);
 
     void updateWithHttpStatusCode(int httpStatusCode);
+
+    void finalAttempt(boolean finalAttempt);
 
     boolean finishIfNotAlready();
 }

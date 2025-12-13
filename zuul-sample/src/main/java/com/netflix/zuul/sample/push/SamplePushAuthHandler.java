@@ -21,9 +21,9 @@ import com.netflix.zuul.netty.server.push.PushAuthHandler;
 import com.netflix.zuul.netty.server.push.PushUserAuth;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.Cookie;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.cookie.Cookie;
 
 /**
  * Takes cookie value of the cookie "userAuthCookie" as a customerId WITHOUT ANY actual validation.
@@ -42,9 +42,6 @@ public class SamplePushAuthHandler extends PushAuthHandler {
 
     /**
      * We support only cookie based auth in this sample
-     * @param req
-     * @param ctx
-     * @return
      */
     @Override
     protected boolean isDelayedAuth(FullHttpRequest req, ChannelHandlerContext ctx) {
@@ -52,11 +49,11 @@ public class SamplePushAuthHandler extends PushAuthHandler {
     }
 
     @Override
-    protected PushUserAuth doAuth(FullHttpRequest req) {
-        final Cookies cookies = parseCookies(req);
-        for (final Cookie c : cookies.getAll()) {
-            if(c.getName().equals("userAuthCookie")) {
-                final String customerId = c.getValue();
+    protected PushUserAuth doAuth(FullHttpRequest req, ChannelHandlerContext ctx) {
+        Cookies cookies = parseCookies(req);
+        for (Cookie c : cookies.getAll()) {
+            if (c.name().equals("userAuthCookie")) {
+                String customerId = c.value();
                 if (!Strings.isNullOrEmpty(customerId)) {
                     return new SamplePushUserAuth(customerId);
                 }
@@ -64,5 +61,4 @@ public class SamplePushAuthHandler extends PushAuthHandler {
         }
         return new SamplePushUserAuth(HttpResponseStatus.UNAUTHORIZED.code());
     }
-
 }

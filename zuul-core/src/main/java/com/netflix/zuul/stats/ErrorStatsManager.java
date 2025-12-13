@@ -16,15 +16,8 @@
 package com.netflix.zuul.stats;
 
 import com.netflix.zuul.stats.monitoring.MonitorRegistry;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.runners.MockitoJUnitRunner;
-
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
 
 /**
  * Manager to handle Error Statistics
@@ -33,8 +26,9 @@ import static org.junit.Assert.assertNotNull;
  * Time: 4:16 PM
  */
 public class ErrorStatsManager {
-    ConcurrentHashMap<String, ConcurrentHashMap<String, ErrorStatsData>> routeMap = new ConcurrentHashMap<String, ConcurrentHashMap<String, ErrorStatsData>>();
-    final static ErrorStatsManager INSTANCE = new ErrorStatsManager();
+    ConcurrentHashMap<String, ConcurrentHashMap<String, ErrorStatsData>> routeMap =
+            new ConcurrentHashMap<String, ConcurrentHashMap<String, ErrorStatsData>>();
+    static final ErrorStatsManager INSTANCE = new ErrorStatsManager();
 
     /**
      *
@@ -44,7 +38,6 @@ public class ErrorStatsManager {
         return INSTANCE;
     }
 
-
     /**
      *
      * @param route
@@ -53,7 +46,9 @@ public class ErrorStatsManager {
      */
     public ErrorStatsData getStats(String route, String cause) {
         Map<String, ErrorStatsData> map = routeMap.get(route);
-        if (map == null) return null;
+        if (map == null) {
+            return null;
+        }
         return map.get(cause);
     }
 
@@ -63,7 +58,9 @@ public class ErrorStatsManager {
      * @param cause
      */
     public void putStats(String route, String cause) {
-        if (route == null) route = "UNKNOWN_ROUTE";
+        if (route == null) {
+            route = "UNKNOWN_ROUTE";
+        }
         route = route.replace("/", "_");
         ConcurrentHashMap<String, ErrorStatsData> statsMap = routeMap.get(route);
         if (statsMap == null) {
@@ -83,34 +80,5 @@ public class ErrorStatsManager {
         sd.update();
     }
 
-
-    @RunWith(MockitoJUnitRunner.class)
-    public static class UnitTest {
-
-        @Test
-        public void testPutStats() {
-            ErrorStatsManager sm = new ErrorStatsManager();
-            assertNotNull(sm);
-            sm.putStats("test", "cause");
-            assertNotNull(sm.routeMap.get("test"));
-            ConcurrentHashMap<String, ErrorStatsData> map = sm.routeMap.get("test");
-            ErrorStatsData sd = map.get("cause");
-            assertEquals(sd.count.get(), 1);
-            sm.putStats("test", "cause");
-            assertEquals(sd.count.get(), 2);
-        }
-
-
-        @Test
-        public void testGetStats() {
-            ErrorStatsManager sm = new ErrorStatsManager();
-            assertNotNull(sm);
-            sm.putStats("test", "cause");
-            assertNotNull(sm.getStats("test", "cause"));
-        }
-
-    }
-
-
+    public static class UnitTest {}
 }
-

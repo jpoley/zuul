@@ -16,86 +16,102 @@
 
 package com.netflix.netty.common.ssl;
 
+import com.netflix.zuul.netty.server.psk.ClientPSKIdentityInfo;
 import io.netty.handler.ssl.ClientAuth;
-
-import javax.security.cert.X509Certificate;
 import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
 
 /**
- * User: michaels@netflix.com
- * Date: 3/29/16
- * Time: 11:06 AM
+ * User: michaels@netflix.com Date: 3/29/16 Time: 11:06 AM
  */
-public class SslHandshakeInfo
-{
+public class SslHandshakeInfo {
+
     private final String protocol;
     private final String cipherSuite;
     private final ClientAuth clientAuthRequirement;
     private final Certificate serverCertificate;
     private final X509Certificate clientCertificate;
     private final boolean isOfIntermediary;
+    private final boolean usingExternalPSK;
+    private final ClientPSKIdentityInfo clientPSKIdentityInfo;
 
-    public SslHandshakeInfo(boolean isOfIntermediary, String protocol, String cipherSuite, Certificate serverCertificate)
-    {
-        this.protocol = protocol;
-        this.cipherSuite = cipherSuite;
-        this.isOfIntermediary = isOfIntermediary;
-        this.serverCertificate = serverCertificate;
-        this.clientAuthRequirement = ClientAuth.NONE;
-        this.clientCertificate = null;
-    }
-
-    public SslHandshakeInfo(boolean isOfIntermediary, String protocol, String cipherSuite, ClientAuth clientAuthRequirement,
-                            Certificate serverCertificate, X509Certificate clientCertificate)
-    {
+    // for backward compatibility
+    public SslHandshakeInfo(
+            boolean isOfIntermediary,
+            String protocol,
+            String cipherSuite,
+            ClientAuth clientAuthRequirement,
+            Certificate serverCertificate,
+            X509Certificate clientCertificate) {
         this.protocol = protocol;
         this.cipherSuite = cipherSuite;
         this.clientAuthRequirement = clientAuthRequirement;
         this.serverCertificate = serverCertificate;
         this.clientCertificate = clientCertificate;
         this.isOfIntermediary = isOfIntermediary;
+        this.usingExternalPSK = false;
+        this.clientPSKIdentityInfo = null;
     }
 
-    public boolean isOfIntermediary()
-    {
+    public SslHandshakeInfo(
+            boolean isOfIntermediary,
+            String protocol,
+            String cipherSuite,
+            ClientAuth clientAuthRequirement,
+            Certificate serverCertificate,
+            X509Certificate clientCertificate,
+            boolean usingExternalPSK,
+            ClientPSKIdentityInfo clientPSKIdentityInfo) {
+        this.protocol = protocol;
+        this.cipherSuite = cipherSuite;
+        this.clientAuthRequirement = clientAuthRequirement;
+        this.serverCertificate = serverCertificate;
+        this.clientCertificate = clientCertificate;
+        this.isOfIntermediary = isOfIntermediary;
+        this.usingExternalPSK = usingExternalPSK;
+        this.clientPSKIdentityInfo = clientPSKIdentityInfo;
+    }
+
+    public boolean isOfIntermediary() {
         return isOfIntermediary;
     }
 
-    public String getProtocol()
-    {
+    public String getProtocol() {
         return protocol;
     }
 
-    public String getCipherSuite()
-    {
+    public String getCipherSuite() {
         return cipherSuite;
     }
 
-    public ClientAuth getClientAuthRequirement()
-    {
+    public ClientAuth getClientAuthRequirement() {
         return clientAuthRequirement;
     }
 
-    public Certificate getServerCertificate()
-    {
+    public Certificate getServerCertificate() {
         return serverCertificate;
     }
 
-    public X509Certificate getClientCertificate()
-    {
+    public X509Certificate getClientCertificate() {
         return clientCertificate;
     }
 
+    public boolean usingExternalPSK() {
+        return usingExternalPSK;
+    }
+
+    public ClientPSKIdentityInfo geClientPSKIdentityInfo() {
+        return clientPSKIdentityInfo;
+    }
+
     @Override
-    public String toString()
-    {
-        return "SslHandshakeInfo{" +
-                "protocol='" + protocol + '\'' +
-                ", cipherSuite='" + cipherSuite + '\'' +
-                ", clientAuthRequirement=" + clientAuthRequirement +
-                ", serverCertificate=" + serverCertificate +
-                ", clientCertificate=" + clientCertificate +
-                ", isOfIntermediary=" + isOfIntermediary +
-                '}';
+    public String toString() {
+        return "SslHandshakeInfo{" + "protocol='"
+                + protocol + '\'' + ", cipherSuite='"
+                + cipherSuite + '\'' + ", clientAuthRequirement="
+                + clientAuthRequirement + ", serverCertificate="
+                + serverCertificate + ", clientCertificate="
+                + clientCertificate + ", isOfIntermediary="
+                + isOfIntermediary + '}';
     }
 }

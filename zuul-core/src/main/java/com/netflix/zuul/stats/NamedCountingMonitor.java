@@ -15,14 +15,11 @@
  */
 package com.netflix.zuul.stats;
 
-import com.netflix.servo.annotations.DataSourceType;
-import com.netflix.servo.annotations.Monitor;
-import com.netflix.servo.annotations.MonitorTags;
-import com.netflix.servo.tag.BasicTagList;
-import com.netflix.servo.tag.TagList;
+import com.netflix.spectator.api.Registry;
+import com.netflix.spectator.api.Spectator;
+import com.netflix.spectator.api.patterns.PolledMeter;
 import com.netflix.zuul.stats.monitoring.MonitorRegistry;
 import com.netflix.zuul.stats.monitoring.NamedCount;
-
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -30,25 +27,22 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * @author mhawthorne
  */
-public class NamedCountingMonitor implements NamedCount{
-
+public class NamedCountingMonitor implements NamedCount {
 
     private final String name;
 
-    @MonitorTags
-    TagList tagList;
-
-    @Monitor(name = "count", type = DataSourceType.COUNTER)
     private final AtomicLong count = new AtomicLong();
 
     public NamedCountingMonitor(String name) {
         this.name = name;
-        tagList = BasicTagList.of("ID", name);
+        Registry registry = Spectator.globalRegistry();
+        PolledMeter.using(registry)
+                .withId(registry.createId("zuul.ErrorStatsData", "ID", name))
+                .monitorValue(this, NamedCountingMonitor::getCount);
     }
 
     /**
-     * reguisters this objects
-     * @return
+     * registers this objects
      */
     public NamedCountingMonitor register() {
         MonitorRegistry.getInstance().registerObject(this);
@@ -57,7 +51,6 @@ public class NamedCountingMonitor implements NamedCount{
 
     /**
      * increments the counter
-     * @return
      */
     public long increment() {
         return this.count.incrementAndGet();
@@ -69,11 +62,10 @@ public class NamedCountingMonitor implements NamedCount{
     }
 
     /**
-     *
      * @return the current count
      */
+    @Override
     public long getCount() {
         return this.count.get();
     }
-
 }

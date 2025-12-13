@@ -15,10 +15,11 @@
  */
 package com.netflix.zuul.message.http;
 
-
+import com.google.common.annotations.VisibleForTesting;
 import com.netflix.config.CachedDynamicBooleanProperty;
 import com.netflix.config.CachedDynamicIntProperty;
 import com.netflix.config.DynamicStringProperty;
+import com.netflix.util.Pair;
 import com.netflix.zuul.context.CommonContextKeys;
 import com.netflix.zuul.context.SessionContext;
 import com.netflix.zuul.filters.ZuulFilter;
@@ -26,61 +27,59 @@ import com.netflix.zuul.message.Headers;
 import com.netflix.zuul.message.ZuulMessage;
 import com.netflix.zuul.message.ZuulMessageImpl;
 import com.netflix.zuul.util.HttpUtils;
-import io.netty.channel.Channel;
-import io.netty.handler.codec.http.Cookie;
-import io.netty.handler.codec.http.CookieDecoder;
 import io.netty.handler.codec.http.HttpContent;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.runners.MockitoJUnitRunner;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import io.netty.handler.codec.http.cookie.Cookie;
+import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * User: michaels
  * Date: 2/24/15
  * Time: 10:54 AM
  */
-public class HttpRequestMessageImpl implements HttpRequestMessage
-{
+public class HttpRequestMessageImpl implements HttpRequestMessage {
     private static final Logger LOG = LoggerFactory.getLogger(HttpRequestMessageImpl.class);
 
-    private static final CachedDynamicIntProperty MAX_BODY_SIZE_PROP = new CachedDynamicIntProperty(
-            "zuul.HttpRequestMessage.body.max.size", 15 * 1000 * 1024
-    );
-    private static final CachedDynamicBooleanProperty CLEAN_COOKIES = new CachedDynamicBooleanProperty(
-            "zuul.HttpRequestMessage.cookies.clean", false
-    );
+    private static final CachedDynamicBooleanProperty STRICT_HOST_HEADER_VALIDATION =
+            new CachedDynamicBooleanProperty("zuul.HttpRequestMessage.host.header.strict.validation", true);
+
+    private static final CachedDynamicIntProperty MAX_BODY_SIZE_PROP =
+            new CachedDynamicIntProperty("zuul.HttpRequestMessage.body.max.size", 15 * 1000 * 1024);
+    private static final CachedDynamicBooleanProperty CLEAN_COOKIES =
+            new CachedDynamicBooleanProperty("zuul.HttpRequestMessage.cookies.clean", false);
 
     /** ":::"-delimited list of regexes to strip out of the cookie headers. */
     private static final DynamicStringProperty REGEX_PTNS_TO_STRIP_PROP =
             new DynamicStringProperty("zuul.request.cookie.cleaner.strip", " Secure,");
+
     private static final List<Pattern> RE_STRIP;
+
     static {
         RE_STRIP = new ArrayList<>();
-        for (String ptn : REGEX_PTNS_TO_STRIP_PROP.get().split(":::")) {
+        for (String ptn : REGEX_PTNS_TO_STRIP_PROP.get().split(":::", -1)) {
             RE_STRIP.add(Pattern.compile(ptn));
         }
     }
 
-    private static final Pattern PTN_COLON = Pattern.compile(":");
     private static final String URI_SCHEME_SEP = "://";
     private static final String URI_SCHEME_HTTP = "http";
     private static final String URI_SCHEME_HTTPS = "https";
 
     private final boolean immutable;
-    private ZuulMessage message;
+    private final ZuulMessage message;
     private String protocol;
     private String method;
     private String path;
@@ -90,6 +89,7 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     private String scheme;
     private int port;
     private String serverName;
+    private final SocketAddress clientRemoteAddress;
 
     private HttpRequestInfo inboundRequest = null;
     private Cookies parsedCookies = null;
@@ -98,20 +98,54 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     private String reconstructedUri = null;
     private String pathAndQuery = null;
     private String infoForLogging = null;
+    private String originalHost = null;
 
+    private static final SocketAddress UNDEFINED_CLIENT_DEST_ADDRESS = new SocketAddress() {
+        @Override
+        public String toString() {
+            return "Undefined destination address.";
+        }
+    };
 
-    public HttpRequestMessageImpl(SessionContext context, String protocol, String method, String path,
-                                  HttpQueryParams queryParams, Headers headers, String clientIp, String scheme,
-                                  int port, String serverName)
-    {
-        this(context, protocol, method, path, queryParams, headers, clientIp, scheme, port, serverName, false);
+    public HttpRequestMessageImpl(
+            SessionContext context,
+            String protocol,
+            String method,
+            String path,
+            HttpQueryParams queryParams,
+            Headers headers,
+            String clientIp,
+            String scheme,
+            int port,
+            String serverName) {
+        this(
+                context,
+                protocol,
+                method,
+                path,
+                queryParams,
+                headers,
+                clientIp,
+                scheme,
+                port,
+                serverName,
+                UNDEFINED_CLIENT_DEST_ADDRESS,
+                false);
     }
 
-    public HttpRequestMessageImpl(SessionContext context, String protocol, String method, String path,
-                                  HttpQueryParams queryParams, Headers headers, String clientIp, String scheme,
-                                  int port, String serverName,
-                                  boolean immutable)
-    {
+    public HttpRequestMessageImpl(
+            SessionContext context,
+            String protocol,
+            String method,
+            String path,
+            HttpQueryParams queryParams,
+            Headers headers,
+            String clientIp,
+            String scheme,
+            int port,
+            String serverName,
+            SocketAddress clientRemoteAddress,
+            boolean immutable) {
         this.immutable = immutable;
         this.message = new ZuulMessageImpl(context, headers);
         this.protocol = protocol;
@@ -130,30 +164,28 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
         this.scheme = scheme;
         this.port = port;
         this.serverName = serverName;
+        this.clientRemoteAddress = clientRemoteAddress;
     }
 
-    private void immutableCheck()
-    {
+    private void immutableCheck() {
         if (immutable) {
-            throw new IllegalStateException("This HttpRequestMessageImpl is immutable. No mutating operations allowed!");
+            throw new IllegalStateException(
+                    "This HttpRequestMessageImpl is immutable. No mutating operations allowed!");
         }
     }
 
     @Override
-    public SessionContext getContext()
-    {
+    public SessionContext getContext() {
         return message.getContext();
     }
 
     @Override
-    public Headers getHeaders()
-    {
+    public Headers getHeaders() {
         return message.getHeaders();
     }
 
     @Override
-    public void setHeaders(Headers newHeaders)
-    {
+    public void setHeaders(Headers newHeaders) {
         immutableCheck();
         message.setHeaders(newHeaders);
     }
@@ -214,6 +246,11 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
+    public void resetBodyReader() {
+        message.resetBodyReader();
+    }
+
+    @Override
     public boolean hasCompleteBody() {
         return message.hasCompleteBody();
     }
@@ -229,8 +266,7 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
-    public void setProtocol(String protocol)
-    {
+    public void setProtocol(String protocol) {
         immutableCheck();
         this.protocol = protocol;
     }
@@ -239,23 +275,23 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     public String getMethod() {
         return method;
     }
+
     @Override
-    public void setMethod(String method)
-    {
+    public void setMethod(String method) {
         immutableCheck();
         this.method = method;
     }
 
     @Override
     public String getPath() {
-        if (message.getContext().containsKey(CommonContextKeys.ZUUL_USE_DECODED_URI)) {
+        if (Objects.equals(message.getContext().get(CommonContextKeys.ZUUL_USE_DECODED_URI), Boolean.TRUE)) {
             return decodedPath;
         }
         return path;
     }
+
     @Override
-    public void setPath(String path)
-    {
+    public void setPath(String path) {
         immutableCheck();
         this.path = path;
         this.decodedPath = path;
@@ -267,26 +303,22 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
-    public String getPathAndQuery()
-    {
+    public String getPathAndQuery() {
         // If this instance is immutable, then lazy-cache.
         if (immutable) {
             if (pathAndQuery == null) {
                 pathAndQuery = generatePathAndQuery();
             }
             return pathAndQuery;
-        }
-        else {
+        } else {
             return generatePathAndQuery();
         }
     }
 
-    protected String generatePathAndQuery()
-    {
+    protected String generatePathAndQuery() {
         if (queryParams != null && queryParams.entries().size() > 0) {
             return getPath() + "?" + queryParams.toEncodedString();
-        }
-        else {
+        } else {
             return getPath();
         }
     }
@@ -295,51 +327,54 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     public String getClientIp() {
         return clientIp;
     }
-    @Override
-    public void setClientIp(String clientIp)
-    {
+
+    @Deprecated
+    @VisibleForTesting
+    void setClientIp(String clientIp) {
         immutableCheck();
         this.clientIp = clientIp;
     }
 
+    /**
+     * Note: this is meant to be used typically in cases where TLS termination happens on instance.
+     * For CLB/ALB fronted traffic, consider using {@link #getOriginalScheme()} instead.
+     */
     @Override
     public String getScheme() {
         return scheme;
     }
+
     @Override
-    public void setScheme(String scheme)
-    {
+    public void setScheme(String scheme) {
         immutableCheck();
         this.scheme = scheme;
     }
 
     @Override
-    public int getPort()
-    {
+    public int getPort() {
         return port;
     }
-    @Override
-    public void setPort(int port)
-    {
+
+    @Deprecated
+    @VisibleForTesting
+    void setPort(int port) {
         immutableCheck();
         this.port = port;
     }
 
     @Override
-    public String getServerName()
-    {
+    public String getServerName() {
         return serverName;
     }
+
     @Override
-    public void setServerName(String serverName)
-    {
+    public void setServerName(String serverName) {
         immutableCheck();
         this.serverName = serverName;
     }
 
     @Override
-    public Cookies parseCookies()
-    {
+    public Cookies parseCookies() {
         if (parsedCookies == null) {
             parsedCookies = reParseCookies();
         }
@@ -347,33 +382,32 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
-    public Cookies reParseCookies()
-    {
+    public Cookies reParseCookies() {
         Cookies cookies = new Cookies();
-        for (String aCookieHeader : getHeaders().get(HttpHeaderNames.COOKIE))
-        {
+        for (String aCookieHeader : getHeaders().getAll(HttpHeaderNames.COOKIE)) {
             try {
                 if (CLEAN_COOKIES.get()) {
                     aCookieHeader = cleanCookieHeader(aCookieHeader);
                 }
 
-                Set<Cookie> decoded = CookieDecoder.decode(aCookieHeader, false);
+                List<Cookie> decoded = ServerCookieDecoder.LAX.decodeAll(aCookieHeader);
                 for (Cookie cookie : decoded) {
                     cookies.add(cookie);
                 }
+            } catch (Exception e) {
+                LOG.warn(
+                        "Error parsing request Cookie header. cookie={}, request-info={}",
+                        aCookieHeader,
+                        getInfoForLogging(),
+                        e);
             }
-            catch (Exception e) {
-                LOG.error(String.format("Error parsing request Cookie header. cookie=%s, request-info=%s",
-                        aCookieHeader, getInfoForLogging()));
-            }
-
         }
         parsedCookies = cookies;
         return cookies;
     }
 
-    private static String cleanCookieHeader(String cookie)
-    {
+    @VisibleForTesting
+    static String cleanCookieHeader(String cookie) {
         for (Pattern stripPtn : RE_STRIP) {
             Matcher matcher = stripPtn.matcher(cookie);
             if (matcher.find()) {
@@ -389,71 +423,83 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
-    public ZuulMessage clone()
-    {
-        HttpRequestMessageImpl clone = new HttpRequestMessageImpl(message.getContext().clone(),
-                protocol, method, path,
-                queryParams.clone(), message.getHeaders().clone(), clientIp, scheme,
-                port, serverName);
+    public ZuulMessage clone() {
+        HttpRequestMessageImpl clone = new HttpRequestMessageImpl(
+                message.getContext().clone(),
+                protocol,
+                method,
+                path,
+                queryParams.clone(),
+                Headers.copyOf(message.getHeaders()),
+                clientIp,
+                scheme,
+                port,
+                serverName,
+                clientRemoteAddress,
+                immutable);
         if (getInboundRequest() != null) {
             clone.inboundRequest = (HttpRequestInfo) getInboundRequest().clone();
         }
         return clone;
     }
 
-    protected HttpRequestInfo copyRequestInfo()
-    {
-        // Unlike clone(), we create immutable copies of the Headers and HttpQueryParams here.
-        HttpRequestMessageImpl req = new HttpRequestMessageImpl(message.getContext(),
-                protocol, method, path,
-                queryParams.immutableCopy(), message.getHeaders().immutableCopy(), clientIp, scheme,
-                port, serverName, true);
+    protected HttpRequestInfo copyRequestInfo() {
+
+        HttpRequestMessageImpl req = new HttpRequestMessageImpl(
+                message.getContext(),
+                protocol,
+                method,
+                path,
+                queryParams.immutableCopy(),
+                Headers.copyOf(message.getHeaders()),
+                clientIp,
+                scheme,
+                port,
+                serverName,
+                clientRemoteAddress,
+                true);
         req.setHasBody(hasBody());
         return req;
     }
 
     @Override
-    public void storeInboundRequest()
-    {
+    public void storeInboundRequest() {
         inboundRequest = copyRequestInfo();
     }
 
     @Override
-    public HttpRequestInfo getInboundRequest()
-    {
+    public HttpRequestInfo getInboundRequest() {
         return inboundRequest;
     }
 
     @Override
-    public void setQueryParams(HttpQueryParams queryParams)
-    {
+    public void setQueryParams(HttpQueryParams queryParams) {
         immutableCheck();
         this.queryParams = queryParams;
     }
 
     @Override
-    public String getInfoForLogging()
-    {
+    public String getInfoForLogging() {
         // If this instance is immutable, then lazy-cache generating this info.
         if (immutable) {
             if (infoForLogging == null) {
                 infoForLogging = generateInfoForLogging();
             }
             return infoForLogging;
-        }
-        else {
+        } else {
             return generateInfoForLogging();
         }
     }
 
-    protected String generateInfoForLogging()
-    {
+    protected String generateInfoForLogging() {
         HttpRequestInfo req = getInboundRequest() == null ? this : getInboundRequest();
         StringBuilder sb = new StringBuilder()
-                .append("uri=").append(req.reconstructURI())
-                .append(", method=").append(req.getMethod())
-                .append(", clientip=").append(HttpUtils.getClientIP(req))
-                ;
+                .append("uri=")
+                .append(req.reconstructURI())
+                .append(", method=")
+                .append(req.getMethod())
+                .append(", clientip=")
+                .append(HttpUtils.getClientIP(req));
         return sb.toString();
     }
 
@@ -462,30 +508,34 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
      *
      * The Host header may contain port, but in this method we strip it out for consistency - use the
      * getOriginalPort method for that.
-     *
-     * @return
      */
     @Override
-    public String getOriginalHost()
-    {
-        String host = getHeaders().getFirst(HttpHeaderNames.X_FORWARDED_HOST);
-        if (host == null) {
-            host = getHeaders().getFirst(HttpHeaderNames.HOST);
-            if (host != null) {
-                // Host header may have a trailing port. Strip that out if it does.
-                host = PTN_COLON.split(host)[0];
+    public String getOriginalHost() {
+        try {
+            if (originalHost == null) {
+                originalHost = getOriginalHost(getHeaders(), getServerName());
             }
-
-            if (host == null) {
-                host = getServerName();
-            }
+            return originalHost;
+        } catch (URISyntaxException e) {
+            throw new IllegalArgumentException(e);
         }
-        return host;
+    }
+
+    @VisibleForTesting
+    static String getOriginalHost(Headers headers, String serverName) throws URISyntaxException {
+        String xForwardedHost = headers.getFirst(HttpHeaderNames.X_FORWARDED_HOST);
+        if (xForwardedHost != null) {
+            return xForwardedHost;
+        }
+        Pair<String, Integer> host = parseHostHeader(headers);
+        if (host.first() != null) {
+            return host.first();
+        }
+        return serverName;
     }
 
     @Override
-    public String getOriginalScheme()
-    {
+    public String getOriginalScheme() {
         String scheme = getHeaders().getFirst(HttpHeaderNames.X_FORWARDED_PROTO);
         if (scheme == null) {
             scheme = getScheme();
@@ -494,8 +544,7 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
-    public String getOriginalProtocol()
-    {
+    public String getOriginalProtocol() {
         String proto = getHeaders().getFirst(HttpHeaderNames.X_FORWARDED_PROTO_VERSION);
         if (proto == null) {
             proto = getProtocol();
@@ -504,30 +553,89 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
     }
 
     @Override
-    public int getOriginalPort()
-    {
-        int port;
-        String portStr = getHeaders().getFirst(HttpHeaderNames.X_FORWARDED_PORT);
-        if (portStr == null) {
+    public int getOriginalPort() {
+        return getOriginalPort(getContext(), getHeaders(), getPort());
+    }
+
+    @VisibleForTesting
+    static int getOriginalPort(SessionContext context, Headers headers, int serverPort) {
+        if (context.containsKey(CommonContextKeys.PROXY_PROTOCOL_DESTINATION_ADDRESS)) {
+            return ((InetSocketAddress) context.get(CommonContextKeys.PROXY_PROTOCOL_DESTINATION_ADDRESS)).getPort();
+        }
+        String portStr = headers.getFirst(HttpHeaderNames.X_FORWARDED_PORT);
+        if (portStr != null && !portStr.isEmpty()) {
+            return Integer.parseInt(portStr);
+        }
+
+        try {
             // Check if port was specified on a Host header.
-            String hostHeader = getHeaders().getFirst(HttpHeaderNames.HOST);
-            if (hostHeader != null) {
-                String[] hostParts = PTN_COLON.split(hostHeader);
-                if (hostParts.length == 2) {
-                    port = Integer.parseInt(hostParts[1]);
-                }
-                else {
-                    port = getPort();
-                }
+            Pair<String, Integer> host = parseHostHeader(headers);
+            if (host.second() != -1) {
+                return host.second();
             }
-            else {
-                port = getPort();
+        } catch (URISyntaxException e) {
+            LOG.debug("Invalid host header, falling back to serverPort", e);
+        }
+
+        return serverPort;
+    }
+
+    @Override
+    public Optional<Integer> getClientDestinationPort() {
+        if (clientRemoteAddress instanceof InetSocketAddress inetSocketAddress) {
+            return Optional.of(inetSocketAddress.getPort());
+        } else {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Attempt to parse the Host header from the collection of headers
+     * and return the hostname and port components.
+     *
+     * @return Hostname and Port pair.
+     *         Hostname may be null. Port may be -1 when no valid port is found in the host header.
+     */
+    private static Pair<String, Integer> parseHostHeader(Headers headers) throws URISyntaxException {
+        String host = headers.getFirst(HttpHeaderNames.HOST);
+        if (host == null) {
+            return new Pair<>(null, -1);
+        }
+
+        try {
+            // attempt to use default URI parsing - this can fail when not strictly following RFC2396,
+            // for example, having underscores in host names will fail parsing
+            URI uri = new URI(/* scheme= */ null, host, /* path= */ null, /* query= */ null, /* fragment= */ null);
+            if (uri.getHost() != null) {
+                return new Pair<>(uri.getHost(), uri.getPort());
+            }
+        } catch (URISyntaxException e) {
+            LOG.debug("URI parsing failed", e);
+        }
+
+        if (STRICT_HOST_HEADER_VALIDATION.get()) {
+            throw new URISyntaxException(host, "Invalid host");
+        }
+
+        // fallback to using a colon split
+        // valid IPv6 addresses would have been handled already so any colon is safely assumed a port separator
+        String[] components = host.split(":", -1);
+        if (components.length > 2) {
+            // handle case with unbracketed IPv6 addresses
+            return new Pair<>(null, -1);
+        }
+
+        String parsedHost = components[0];
+        int parsedPort = -1;
+        if (components.length > 1) {
+            try {
+                parsedPort = Integer.parseInt(components[1]);
+            } catch (NumberFormatException e) {
+                // ignore failing to parse port numbers and fallback to default port
+                LOG.debug("Parsing of host port component failed", e);
             }
         }
-        else {
-            port = Integer.parseInt(portStr);
-        }
-        return port;
+        return new Pair<>(parsedHost, parsedPort);
     }
 
     /**
@@ -536,32 +644,28 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
      * @return String
      */
     @Override
-    public String reconstructURI()
-    {
+    public String reconstructURI() {
         // If this instance is immutable, then lazy-cache reconstructing the uri.
         if (immutable) {
             if (reconstructedUri == null) {
                 reconstructedUri = _reconstructURI();
             }
             return reconstructedUri;
-        }
-        else {
+        } else {
             return _reconstructURI();
         }
     }
 
-    protected String _reconstructURI()
-    {
+    protected String _reconstructURI() {
         try {
             StringBuilder uri = new StringBuilder(100);
 
-            String scheme = getOriginalScheme().toLowerCase();
+            String scheme = getOriginalScheme().toLowerCase(Locale.ROOT);
             uri.append(scheme);
             uri.append(URI_SCHEME_SEP).append(getOriginalHost());
 
             int port = getOriginalPort();
-            if ((URI_SCHEME_HTTP.equals(scheme) && 80 == port)
-                    || (URI_SCHEME_HTTPS.equals(scheme) && 443 == port)) {
+            if ((scheme.equals(URI_SCHEME_HTTP) && port == 80) || (scheme.equals(URI_SCHEME_HTTPS) && port == 443)) {
                 // Don't need to include port.
             } else {
                 uri.append(':').append(port);
@@ -570,8 +674,11 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
             uri.append(getPathAndQuery());
 
             return uri.toString();
-        }
-        catch (Exception e) {
+        } catch (IllegalArgumentException e) {
+            // This is not really so bad, just debug log it and move on.
+            LOG.debug("Error reconstructing request URI!", e);
+            return "";
+        } catch (Exception e) {
             LOG.error("Error reconstructing request URI!", e);
             return "";
         }
@@ -579,240 +686,22 @@ public class HttpRequestMessageImpl implements HttpRequestMessage
 
     @Override
     public String toString() {
-        return "HttpRequestMessageImpl{" +
-                "immutable=" + immutable +
-                ", message=" + message +
-                ", protocol='" + protocol + '\'' +
-                ", method='" + method + '\'' +
-                ", path='" + path + '\'' +
-                ", queryParams=" + queryParams +
-                ", clientIp='" + clientIp + '\'' +
-                ", scheme='" + scheme + '\'' +
-                ", port=" + port +
-                ", serverName='" + serverName + '\'' +
-                ", inboundRequest=" + inboundRequest +
-                ", parsedCookies=" + parsedCookies +
-                ", reconstructedUri='" + reconstructedUri + '\'' +
-                ", pathAndQuery='" + pathAndQuery + '\'' +
-                ", infoForLogging='" + infoForLogging + '\'' +
-                '}';
-    }
-
-    @RunWith(MockitoJUnitRunner.class)
-    public static class TestUnit
-    {
-        HttpRequestMessageImpl request;
-
-        @Test
-        public void testOriginalRequestInfo()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            queryParams.add("flag", "5");
-            Headers headers = new Headers();
-            headers.add("Host", "blah.netflix.com");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-
-            request.storeInboundRequest();
-            HttpRequestInfo originalRequest = request.getInboundRequest();
-
-            Assert.assertEquals(request.getPort(), originalRequest.getPort());
-            Assert.assertEquals(request.getPath(), originalRequest.getPath());
-            Assert.assertEquals(request.getQueryParams().getFirst("flag"), originalRequest.getQueryParams().getFirst("flag"));
-            Assert.assertEquals(request.getHeaders().getFirst("Host"), originalRequest.getHeaders().getFirst("Host"));
-
-            request.setPort(8080);
-            request.setPath("/another/place");
-            request.getQueryParams().set("flag", "20");
-            request.getHeaders().set("Host", "wah.netflix.com");
-
-            Assert.assertEquals(7002, originalRequest.getPort());
-            Assert.assertEquals("/some/where", originalRequest.getPath());
-            Assert.assertEquals("5", originalRequest.getQueryParams().getFirst("flag"));
-            Assert.assertEquals("blah.netflix.com", originalRequest.getHeaders().getFirst("Host"));
-        }
-
-        @Test
-        public void testReconstructURI()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            queryParams.add("flag", "5");
-            Headers headers = new Headers();
-            headers.add("Host", "blah.netflix.com");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals("https://blah.netflix.com:7002/some/where?flag=5", request.reconstructURI());
-
-            queryParams = new HttpQueryParams();
-            headers = new Headers();
-            headers.add("X-Forwarded-Host", "place.netflix.com");
-            headers.add("X-Forwarded-Port", "80");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "http", 7002, "localhost");
-            Assert.assertEquals("http://place.netflix.com/some/where", request.reconstructURI());
-
-            queryParams = new HttpQueryParams();
-            headers = new Headers();
-            headers.add("X-Forwarded-Host", "place.netflix.com");
-            headers.add("X-Forwarded-Proto", "https");
-            headers.add("X-Forwarded-Port", "443");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "http", 7002, "localhost");
-            Assert.assertEquals("https://place.netflix.com/some/where", request.reconstructURI());
-
-            queryParams = new HttpQueryParams();
-            headers = new Headers();
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "http", 7002, "localhost");
-            Assert.assertEquals("http://localhost:7002/some/where", request.reconstructURI());
-
-            queryParams = new HttpQueryParams();
-            queryParams.add("flag", "5");
-            queryParams.add("flag B", "9");
-            headers = new Headers();
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some%20where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals("https://localhost:7002/some%20where?flag=5&flag+B=9", request.reconstructURI());
-        }
-
-        @Test
-        public void testReconstructURI_immutable()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            queryParams.add("flag", "5");
-            Headers headers = new Headers();
-            headers.add("Host", "blah.netflix.com");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost", true);
-
-            // Check it's the same value 2nd time.
-            Assert.assertEquals("https://blah.netflix.com:7002/some/where?flag=5", request.reconstructURI());
-            Assert.assertEquals("https://blah.netflix.com:7002/some/where?flag=5", request.reconstructURI());
-
-            // Check that cached on 1st usage.
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost", true);
-            request = spy(request);
-            when(request._reconstructURI()).thenReturn("http://testhost/blah");
-            verify(request, times(1))._reconstructURI();
-            Assert.assertEquals("http://testhost/blah", request.reconstructURI());
-            Assert.assertEquals("http://testhost/blah", request.reconstructURI());
-
-            // Check that throws exception if we try to mutate it.
-            try {
-                request.setPath("/new-path");
-                fail();
-            }
-            catch (IllegalStateException e) {
-                assertTrue(true);
-            }
-        }
-
-        @Test
-        public void testPathAndQuery()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            queryParams.add("flag", "5");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, new Headers(),
-                    "192.168.0.2", "https", 7002, "localhost");
-
-            // Check that value changes.
-            Assert.assertEquals("/some/where?flag=5", request.getPathAndQuery());
-            request.getQueryParams().add("k", "v");
-            Assert.assertEquals("/some/where?flag=5&k=v", request.getPathAndQuery());
-            request.setPath("/other");
-            Assert.assertEquals("/other?flag=5&k=v", request.getPathAndQuery());
-        }
-
-        @Test
-        public void testPathAndQuery_immutable()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            queryParams.add("flag", "5");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, new Headers(),
-                    "192.168.0.2", "https", 7002, "localhost", true);
-
-            // Check it's the same value 2nd time.
-            Assert.assertEquals("/some/where?flag=5", request.getPathAndQuery());
-            Assert.assertEquals("/some/where?flag=5", request.getPathAndQuery());
-
-            // Check that cached on 1st usage.
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, new Headers(),
-                    "192.168.0.2", "https", 7002, "localhost", true);
-            request = spy(request);
-            when(request.generatePathAndQuery()).thenReturn("/blah");
-            verify(request, times(1)).generatePathAndQuery();
-            Assert.assertEquals("/blah", request.getPathAndQuery());
-            Assert.assertEquals("/blah", request.getPathAndQuery());
-        }
-
-        @Test
-        public void testGetOriginalHost()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            Headers headers = new Headers();
-            headers.add("Host", "blah.netflix.com");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals("blah.netflix.com", request.getOriginalHost());
-
-            headers = new Headers();
-            headers.add("Host", "blah.netflix.com");
-            headers.add("X-Forwarded-Host", "foo.netflix.com");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals("foo.netflix.com", request.getOriginalHost());
-
-            headers = new Headers();
-            headers.add("X-Forwarded-Host", "foo.netflix.com");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals("foo.netflix.com", request.getOriginalHost());
-
-            headers = new Headers();
-            headers.add("Host", "blah.netflix.com:8080");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals("blah.netflix.com", request.getOriginalHost());
-        }
-
-        @Test
-        public void testGetOriginalPort()
-        {
-            HttpQueryParams queryParams = new HttpQueryParams();
-            Headers headers = new Headers();
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals(7002, request.getOriginalPort());
-
-            headers = new Headers();
-            headers.add("Host", "blah.netflix.com");
-            headers.add("X-Forwarded-Port", "443");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals(443, request.getOriginalPort());
-
-            headers = new Headers();
-            headers.add("Host", "blah.netflix.com:443");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals(443, request.getOriginalPort());
-
-            headers = new Headers();
-            headers.add("Host", "blah.netflix.com:443");
-            headers.add("X-Forwarded-Port", "7005");
-            request = new HttpRequestMessageImpl(new SessionContext(), "HTTP/1.1", "POST", "/some/where", queryParams, headers,
-                    "192.168.0.2", "https", 7002, "localhost");
-            Assert.assertEquals(7005, request.getOriginalPort());
-        }
-
-        @Test
-        public void testCleanCookieHeaders()
-        {
-            assertEquals("BlahId=12345; something=67890;", HttpRequestMessageImpl.cleanCookieHeader("BlahId=12345; Secure, something=67890;"));
-            assertEquals("BlahId=12345; something=67890;", HttpRequestMessageImpl.cleanCookieHeader("BlahId=12345; something=67890;"));
-            assertEquals(" BlahId=12345; something=67890;", HttpRequestMessageImpl.cleanCookieHeader(" Secure, BlahId=12345; Secure, something=67890;"));
-            assertEquals("", HttpRequestMessageImpl.cleanCookieHeader(""));
-        }
+        return "HttpRequestMessageImpl{" + "immutable="
+                + immutable + ", message="
+                + message + ", protocol='"
+                + protocol + '\'' + ", method='"
+                + method + '\'' + ", path='"
+                + path + '\'' + ", queryParams="
+                + queryParams + ", clientIp='"
+                + clientIp + '\'' + ", scheme='"
+                + scheme + '\'' + ", port="
+                + port + ", serverName='"
+                + serverName + '\'' + ", inboundRequest="
+                + inboundRequest + ", parsedCookies="
+                + parsedCookies + ", reconstructedUri='"
+                + reconstructedUri + '\'' + ", pathAndQuery='"
+                + pathAndQuery + '\'' + ", originalHost='"
+                + originalHost + '\'' + ", infoForLogging='"
+                + infoForLogging + '\'' + '}';
     }
 }

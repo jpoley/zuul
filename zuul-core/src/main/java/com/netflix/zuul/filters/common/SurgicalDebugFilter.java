@@ -17,12 +17,15 @@ package com.netflix.zuul.filters.common;
 
 import com.netflix.config.DynamicBooleanProperty;
 import com.netflix.config.DynamicStringProperty;
+import com.netflix.zuul.Filter;
 import com.netflix.zuul.constants.ZuulConstants;
 import com.netflix.zuul.constants.ZuulHeaders;
 import com.netflix.zuul.context.SessionContext;
+import com.netflix.zuul.filters.FilterType;
 import com.netflix.zuul.filters.http.HttpInboundSyncFilter;
 import com.netflix.zuul.message.http.HttpQueryParams;
 import com.netflix.zuul.message.http.HttpRequestMessage;
+import java.util.Objects;
 
 /**
  * This is an abstract filter that will route requests that match the patternMatches() method to a debug Eureka "VIP" or
@@ -32,6 +35,7 @@ import com.netflix.zuul.message.http.HttpRequestMessage;
  * Date: 6/27/12
  * Time: 12:54 PM
  */
+@Filter(order = 99, type = FilterType.INBOUND)
 public class SurgicalDebugFilter extends HttpInboundSyncFilter {
 
     /**
@@ -53,19 +57,23 @@ public class SurgicalDebugFilter extends HttpInboundSyncFilter {
     @Override
     public boolean shouldFilter(HttpRequestMessage request) {
 
-        DynamicBooleanProperty debugFilterShutoff = new DynamicBooleanProperty(ZuulConstants.ZUUL_DEBUGFILTERS_DISABLED, false);
+        DynamicBooleanProperty debugFilterShutoff =
+                new DynamicBooleanProperty(ZuulConstants.ZUUL_DEBUGFILTERS_DISABLED, false);
 
-        if (debugFilterShutoff.get()) return false;
+        if (debugFilterShutoff.get()) {
+            return false;
+        }
 
-        if (isDisabled()) return false;
+        if (isDisabled()) {
+            return false;
+        }
 
         String isSurgicalFilterRequest = request.getHeaders().getFirst(ZuulHeaders.X_ZUUL_SURGICAL_FILTER);
-        // dont' apply filter if it was already applied
-        boolean notAlreadyFiltered = !("true".equals(isSurgicalFilterRequest));
+        // don't apply filter if it was already applied
+        boolean notAlreadyFiltered = !Objects.equals(isSurgicalFilterRequest, "true");
 
         return notAlreadyFiltered && patternMatches(request);
     }
-
 
     @Override
     public HttpRequestMessage apply(HttpRequestMessage request) {
@@ -86,7 +94,6 @@ public class SurgicalDebugFilter extends HttpInboundSyncFilter {
 
             ctx.setDebugRequest(true);
             ctx.set("zuulToZuul", true);
-
         }
         return request;
     }

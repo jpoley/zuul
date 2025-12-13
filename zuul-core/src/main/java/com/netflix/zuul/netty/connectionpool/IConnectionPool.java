@@ -19,7 +19,7 @@ package com.netflix.zuul.netty.connectionpool;
 import com.netflix.zuul.passport.CurrentPassport;
 import io.netty.channel.EventLoop;
 import io.netty.util.concurrent.Promise;
-
+import java.net.InetAddress;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -27,15 +27,25 @@ import java.util.concurrent.atomic.AtomicReference;
  * Date: 7/8/16
  * Time: 1:10 PM
  */
-public interface IConnectionPool
-{
-    Promise<PooledConnection> acquire(EventLoop eventLoop, Object key, String httpMethod, String uri,
-                                      int retryNum, CurrentPassport passport, AtomicReference<String> selectedHostAddr);
+public interface IConnectionPool {
+    Promise<PooledConnection> acquire(
+            EventLoop eventLoop, CurrentPassport passport, AtomicReference<? super InetAddress> selectedHostAddr);
+
     boolean release(PooledConnection conn);
+
     boolean remove(PooledConnection conn);
+
     void shutdown();
+
+    default void drain() {
+        shutdown();
+    }
+
     boolean isAvailable();
+
     int getConnsInUse();
+
     int getConnsInPool();
+
     ConnectionPoolConfig getConfig();
 }

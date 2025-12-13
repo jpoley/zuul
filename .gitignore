@@ -55,11 +55,22 @@ out
 *.iml
 atlassian-ide-plugin.xml
 
+# Visual Studio Code
+.vscode
+
+# Java heap profile
+*.hprof
+
 # Eclipse specific files/directories
 .classpath
 .project
 .settings
 .metadata
 
+zuul-sample/src/main/generated/
+
 # NetBeans specific files/directories
 .nbattrs
+
+# publishing secrets
+secrets/signing-key

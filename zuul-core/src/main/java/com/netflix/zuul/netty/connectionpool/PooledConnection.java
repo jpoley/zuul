@@ -16,34 +16,30 @@
 
 package com.netflix.zuul.netty.connectionpool;
 
-import com.netflix.appinfo.InstanceInfo;
-import com.netflix.loadbalancer.Server;
-import com.netflix.loadbalancer.ServerStats;
 import com.netflix.spectator.api.Counter;
+import com.netflix.zuul.discovery.DiscoveryResult;
 import com.netflix.zuul.passport.CurrentPassport;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.AttributeKey;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.concurrent.TimeUnit;
 
 /**
  * Created by saroskar on 3/15/16.
  */
 public class PooledConnection {
 
-    protected static final AttributeKey<PooledConnection> CHANNEL_ATTR = AttributeKey.newInstance("_pooled_connection");
+    public static final AttributeKey<PooledConnection> CHANNEL_ATTR = AttributeKey.newInstance("_pooled_connection");
     public static final String READ_TIMEOUT_HANDLER_NAME = "readTimeoutHandler";
 
-    private final Server server;
+    private final DiscoveryResult server;
     private final Channel channel;
     private final ClientChannelManager channelManager;
-    private final InstanceInfo serverKey;
-    private final ServerStats serverStats;
     private final long creationTS;
     private final Counter closeConnCounter;
     private final Counter closeWrtBusyConnCounter;
@@ -64,37 +60,33 @@ public class PooledConnection {
         WRITE_BUSY
     }
 
-
     private ConnectionState connectionState;
     private long usageCount = 0;
     private long reqStartTime;
     private boolean inPool = false;
     private boolean shouldClose = false;
-    private boolean released = false;
+    protected boolean released = false;
 
-    public PooledConnection(final Channel channel, final Server server, final ClientChannelManager channelManager,
-                     final InstanceInfo serverKey,
-                     final ServerStats serverStats, 
-                     final Counter closeConnCounter, 
-                     final Counter closeWrtBusyConnCounter)
-    {
+    public PooledConnection(
+            Channel channel,
+            DiscoveryResult server,
+            ClientChannelManager channelManager,
+            Counter closeConnCounter,
+            Counter closeWrtBusyConnCounter) {
         this.channel = channel;
         this.server = server;
         this.channelManager = channelManager;
-        this.serverKey = serverKey;
-        this.serverStats = serverStats;
         this.creationTS = System.currentTimeMillis();
         this.closeConnCounter = closeConnCounter;
         this.closeWrtBusyConnCounter = closeWrtBusyConnCounter;
-        
+
         this.connectionState = ConnectionState.WRITE_READY;
 
         // Store ourself as an attribute on the underlying Channel.
         channel.attr(CHANNEL_ATTR).set(this);
     }
 
-    public void setInUse()
-    {
+    public void setInUse() {
         this.connectionState = ConnectionState.WRITE_BUSY;
         this.released = false;
     }
@@ -103,18 +95,15 @@ public class PooledConnection {
         this.connectionState = state;
     }
 
-    public static PooledConnection getFromChannel(Channel ch)
-    {
+    public static PooledConnection getFromChannel(Channel ch) {
         return ch.attr(CHANNEL_ATTR).get();
     }
 
-    public ConnectionPoolConfig getConfig()
-    {
+    public ConnectionPoolConfig getConfig() {
         return this.channelManager.getConfig();
     }
 
-    public Server getServer()
-    {
+    public DiscoveryResult getServer() {
         return server;
     }
 
@@ -122,17 +111,11 @@ public class PooledConnection {
         return channel;
     }
 
-    public InstanceInfo getServerKey() {
-        return serverKey;
-    }
-
-    public long getUsageCount()
-    {
+    public long getUsageCount() {
         return usageCount;
     }
 
-    public void incrementUsageCount()
-    {
+    public void incrementUsageCount() {
         this.usageCount++;
     }
 
@@ -144,17 +127,13 @@ public class PooledConnection {
         return System.currentTimeMillis() - creationTS;
     }
 
-    public ServerStats getServerStats() {
-        return serverStats;
-    }
-
     public void startRequestTimer() {
         reqStartTime = System.nanoTime();
     }
 
     public long stopRequestTimer() {
-        final long responseTime = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - reqStartTime);
-        serverStats.noteResponseTime(responseTime);
+        long responseTime = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - reqStartTime);
+        server.noteResponseTime((double) responseTime);
         return responseTime;
     }
 
@@ -162,49 +141,41 @@ public class PooledConnection {
         return (channel.isActive() && channel.isRegistered());
     }
 
-    public boolean isInPool()
-    {
+    public boolean isInPool() {
         return inPool;
     }
 
-    public void setInPool(boolean inPool)
-    {
+    public void setInPool(boolean inPool) {
         this.inPool = inPool;
     }
 
-    public boolean isShouldClose()
-    {
+    public boolean isShouldClose() {
         return shouldClose;
     }
 
-    public void flagShouldClose()
-    {
+    public void flagShouldClose() {
         this.shouldClose = true;
     }
 
     public ChannelFuture close() {
-        final ServerStats stats = getServerStats();
-        stats.decrementOpenConnectionsCount();
+        server.decrementOpenConnectionsCount();
         closeConnCounter.increment();
         return channel.close();
     }
 
     public void updateServerStats() {
-        final ServerStats stats = getServerStats();
-        stats.decrementOpenConnectionsCount();
-        stats.close();
+        server.decrementOpenConnectionsCount();
+        server.stopPublishingStats();
     }
 
-    public ChannelFuture closeAndRemoveFromPool()
-    {
+    public ChannelFuture closeAndRemoveFromPool() {
         channelManager.remove(this);
         return this.close();
     }
 
-    public void release()
-    {
+    public boolean release() {
         if (released) {
-            return;
+            return true;
         }
 
         if (isActive()) {
@@ -212,50 +183,55 @@ public class PooledConnection {
                 closeWrtBusyConnCounter.increment();
             }
         }
-        
-        if (! isShouldClose() && connectionState != ConnectionState.WRITE_READY) {
+
+        if (!isShouldClose() && connectionState != ConnectionState.WRITE_READY) {
             CurrentPassport passport = CurrentPassport.fromChannel(channel);
-            LOG.info("Error - Attempt to put busy connection into the pool = " + this.toString()
-                    + ", " + String.valueOf(passport));
+            LOG.info("Error - Attempt to put busy connection into the pool = {}, {}", this, passport);
             this.shouldClose = true;
         }
-
-        removeReadTimeoutHandler();
 
         // reset the connectionState
         connectionState = ConnectionState.WRITE_READY;
         released = true;
-        channelManager.release(this);
+        return channelManager.release(this);
     }
 
-    private void removeReadTimeoutHandler()
-    {
+    public void removeReadTimeoutHandler() {
         // Remove (and therefore destroy) the readTimeoutHandler when we release the
         // channel back to the pool. As don't want it timing-out when it's not in use.
-        final ChannelPipeline pipeline = getChannel().pipeline();
+        ChannelPipeline pipeline = getChannel().pipeline();
         removeHandlerFromPipeline(READ_TIMEOUT_HANDLER_NAME, pipeline);
     }
 
-    private void removeHandlerFromPipeline(String handlerName, ChannelPipeline pipeline)
-    {
+    private void removeHandlerFromPipeline(String handlerName, ChannelPipeline pipeline) {
         if (pipeline.get(handlerName) != null) {
             pipeline.remove(handlerName);
         }
     }
 
-    public void startReadTimeoutHandler(int readTimeout)
-    {
-        channel.pipeline().addBefore("originNettyLogger", READ_TIMEOUT_HANDLER_NAME, new ReadTimeoutHandler(readTimeout, TimeUnit.MILLISECONDS));
+    public void startReadTimeoutHandler(Duration readTimeout) {
+        Channel channel = getChannel();
+        if (!channel.isActive()) {
+            LOG.debug("Tried to start read timeout handler, but channel is not active");
+            return;
+        }
+        channel.pipeline()
+                .addBefore(
+                        DefaultOriginChannelInitializer.ORIGIN_NETTY_LOGGER,
+                        READ_TIMEOUT_HANDLER_NAME,
+                        new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
     }
 
+    ConnectionState getConnectionState() {
+        return connectionState;
+    }
+
+    boolean isReleased() {
+        return released;
+    }
 
     @Override
-    public String toString()
-    {
-        return "PooledConnection{" +
-                "channel=" + channel +
-                ", serverKey=" + serverKey +
-                ", usageCount=" + usageCount +
-                '}';
+    public String toString() {
+        return "PooledConnection{" + "channel=" + channel + ", usageCount=" + usageCount + '}';
     }
 }

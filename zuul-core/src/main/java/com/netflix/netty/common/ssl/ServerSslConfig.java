@@ -18,32 +18,30 @@ package com.netflix.netty.common.ssl;
 
 import com.netflix.config.DynamicLongProperty;
 import io.netty.handler.ssl.ClientAuth;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
 import java.io.File;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
 
 /**
  * User: michaels@netflix.com
  * Date: 8/16/16
  * Time: 2:40 PM
  */
-public class ServerSslConfig
-{
+public class ServerSslConfig {
     private static final DynamicLongProperty DEFAULT_SESSION_TIMEOUT =
-            new DynamicLongProperty("server.ssl.session.timeout", (18 * 60));  // 18 hours
+            new DynamicLongProperty("server.ssl.session.timeout", (18 * 60)); // 18 hours
 
     private static final String[] DEFAULT_CIPHERS;
+
     static {
         try {
             SSLContext context = SSLContext.getDefault();
             SSLSocketFactory sf = context.getSocketFactory();
             DEFAULT_CIPHERS = sf.getSupportedCipherSuites();
-        }
-        catch (NoSuchAlgorithmException e) {
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
     }
@@ -58,35 +56,31 @@ public class ServerSslConfig
     private final String clientAuthTrustStorePassword;
     private final File clientAuthTrustStorePasswordFile;
 
-    private final boolean decryptKeyUsingMetatronPolicy;
-    private final boolean decryptKeyUsingMetatronBundle;
-    private final byte[] metatronPolicy;
-
     private final long sessionTimeout;
     private final boolean sessionTicketsEnabled;
 
-    public ServerSslConfig(String[] protocols, String[] ciphers, File certChainFile, File keyFile)
-    {
-        this(protocols, ciphers, certChainFile, keyFile, null, ClientAuth.NONE, null, (File) null, false);
+    public ServerSslConfig(String[] protocols, String[] ciphers, File certChainFile, File keyFile) {
+        this(protocols, ciphers, certChainFile, keyFile, ClientAuth.NONE, null, (File) null, false);
     }
 
-    public ServerSslConfig(String[] protocols, String[] ciphers, File certChainFile, File keyFile, byte[] metatronPolicy, ClientAuth clientAuth)
-    {
-        this(protocols, ciphers, certChainFile, keyFile, metatronPolicy, clientAuth, null, (File) null, true);
+    public ServerSslConfig(
+            String[] protocols, String[] ciphers, File certChainFile, File keyFile, ClientAuth clientAuth) {
+        this(protocols, ciphers, certChainFile, keyFile, clientAuth, null, (File) null, true);
     }
 
-    public ServerSslConfig(String[] protocols, String[] ciphers, File certChainFile, File keyFile,
-                           byte[] metatronPolicy,
-                           ClientAuth clientAuth, File clientAuthTrustStoreFile, File clientAuthTrustStorePasswordFile, 
-                           boolean sessionTicketsEnabled)
-    {
+    public ServerSslConfig(
+            String[] protocols,
+            String[] ciphers,
+            File certChainFile,
+            File keyFile,
+            ClientAuth clientAuth,
+            File clientAuthTrustStoreFile,
+            File clientAuthTrustStorePasswordFile,
+            boolean sessionTicketsEnabled) {
         this.protocols = protocols;
         this.ciphers = ciphers != null ? Arrays.asList(ciphers) : null;
         this.certChainFile = certChainFile;
         this.keyFile = keyFile;
-        this.decryptKeyUsingMetatronPolicy = (metatronPolicy != null);
-        this.decryptKeyUsingMetatronBundle = false;
-        this.metatronPolicy = metatronPolicy;
         this.clientAuth = clientAuth;
         this.clientAuthTrustStoreFile = clientAuthTrustStoreFile;
         this.clientAuthTrustStorePassword = null;
@@ -95,18 +89,19 @@ public class ServerSslConfig
         this.sessionTicketsEnabled = sessionTicketsEnabled;
     }
 
-    public ServerSslConfig(String[] protocols, String[] ciphers, File certChainFile, File keyFile,
-                           byte[] metatronPolicy,
-                           ClientAuth clientAuth, File clientAuthTrustStoreFile, String clientAuthTrustStorePassword,
-                           boolean sessionTicketsEnabled)
-    {
+    public ServerSslConfig(
+            String[] protocols,
+            String[] ciphers,
+            File certChainFile,
+            File keyFile,
+            ClientAuth clientAuth,
+            File clientAuthTrustStoreFile,
+            String clientAuthTrustStorePassword,
+            boolean sessionTicketsEnabled) {
         this.protocols = protocols;
         this.ciphers = Arrays.asList(ciphers);
         this.certChainFile = certChainFile;
         this.keyFile = keyFile;
-        this.decryptKeyUsingMetatronPolicy = (metatronPolicy != null);
-        this.decryptKeyUsingMetatronBundle = false;
-        this.metatronPolicy = metatronPolicy;
         this.clientAuth = clientAuth;
         this.clientAuthTrustStoreFile = clientAuthTrustStoreFile;
         this.clientAuthTrustStorePassword = clientAuthTrustStorePassword;
@@ -115,115 +110,64 @@ public class ServerSslConfig
         this.sessionTicketsEnabled = sessionTicketsEnabled;
     }
 
-    public ServerSslConfig(String[] protocols, String[] ciphers, File certChainFile, File keyFile,
-                           boolean metatronBundle,
-                           ClientAuth clientAuth, File clientAuthTrustStoreFile, String clientAuthTrustStorePassword,
-                           boolean sessionTicketsEnabled)
-    {
-        this.protocols = protocols;
-        this.ciphers = Arrays.asList(ciphers);
-        this.certChainFile = certChainFile;
-        this.keyFile = keyFile;
-        this.decryptKeyUsingMetatronBundle = metatronBundle;
-        this.decryptKeyUsingMetatronPolicy = false;
-        this.metatronPolicy = null;
-        this.clientAuth = clientAuth;
-        this.clientAuthTrustStoreFile = clientAuthTrustStoreFile;
-        this.clientAuthTrustStorePassword = clientAuthTrustStorePassword;
-        this.clientAuthTrustStorePasswordFile = null;
-        this.sessionTimeout = DEFAULT_SESSION_TIMEOUT.get();
-        this.sessionTicketsEnabled = sessionTicketsEnabled;
-    }
-
-    public static String[] getDefaultCiphers()
-    {
+    public static String[] getDefaultCiphers() {
         return DEFAULT_CIPHERS;
     }
 
-    public static ServerSslConfig withDefaultCiphers(File certChainFile, File keyFile, String ... protocols)
-    {
+    public static ServerSslConfig withDefaultCiphers(File certChainFile, File keyFile, String... protocols) {
         return new ServerSslConfig(protocols, getDefaultCiphers(), certChainFile, keyFile);
     }
 
-    public String[] getProtocols()
-    {
+    public String[] getProtocols() {
         return protocols;
     }
 
-    public List<String> getCiphers()
-    {
+    public List<String> getCiphers() {
         return ciphers;
     }
 
-    public File getCertChainFile()
-    {
+    public File getCertChainFile() {
         return certChainFile;
     }
 
-    public File getKeyFile()
-    {
+    public File getKeyFile() {
         return keyFile;
     }
 
-    public boolean shouldDecryptKeyUsingMetatronPolicy()
-    {
-        return decryptKeyUsingMetatronPolicy;
-    }
-
-    public boolean shouldDecryptKeyUsingMetatronBundle()
-    {
-        return decryptKeyUsingMetatronBundle;
-    }
-
-    public byte[] getMetatronPolicyFile()
-    {
-        return metatronPolicy;
-    }
-
-    public ClientAuth getClientAuth()
-    {
+    public ClientAuth getClientAuth() {
         return clientAuth;
     }
 
-    public File getClientAuthTrustStoreFile()
-    {
+    public File getClientAuthTrustStoreFile() {
         return clientAuthTrustStoreFile;
     }
 
-    public String getClientAuthTrustStorePassword()
-    {
+    public String getClientAuthTrustStorePassword() {
         return clientAuthTrustStorePassword;
     }
 
-    public File getClientAuthTrustStorePasswordFile()
-    {
+    public File getClientAuthTrustStorePasswordFile() {
         return clientAuthTrustStorePasswordFile;
     }
 
-    public long getSessionTimeout()
-    {
+    public long getSessionTimeout() {
         return sessionTimeout;
     }
 
-    public boolean sessionTicketsEnabled()
-    {
+    public boolean sessionTicketsEnabled() {
         return sessionTicketsEnabled;
     }
 
     @Override
-    public String toString()
-    {
-        return "ServerSslConfig{" +
-                "protocols=" + Arrays.toString(protocols) +
-                ", ciphers=" + ciphers +
-                ", certChainFile=" + certChainFile +
-                ", keyFile=" + keyFile +
-                ", clientAuth=" + clientAuth +
-                ", clientAuthTrustStoreFile=" + clientAuthTrustStoreFile +
-                ", decryptKeyUsingMetatronPolicy=" + decryptKeyUsingMetatronPolicy +
-                ", decryptKeyUsingMetatronBundle=" + decryptKeyUsingMetatronBundle +
-                ", sessionTimeout=" + sessionTimeout +
-                ", sessionTicketsEnabled=" + sessionTicketsEnabled +
-                '}';
+    public String toString() {
+        return "ServerSslConfig{" + "protocols="
+                + Arrays.toString(protocols) + ", ciphers="
+                + ciphers + ", certChainFile="
+                + certChainFile + ", keyFile="
+                + keyFile + ", clientAuth="
+                + clientAuth + ", clientAuthTrustStoreFile="
+                + clientAuthTrustStoreFile + ", sessionTimeout="
+                + sessionTimeout + ", sessionTicketsEnabled="
+                + sessionTicketsEnabled + '}';
     }
 }

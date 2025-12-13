@@ -22,86 +22,75 @@ import com.netflix.zuul.exception.ZuulFilterConcurrencyExceededException;
 import com.netflix.zuul.message.ZuulMessage;
 import com.netflix.zuul.netty.SpectatorUtils;
 import io.netty.handler.codec.http.HttpContent;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
-
 /**
- * Base abstract class for ZuulFilters. The base class defines abstract methods to define:
- * filterType() - to classify a filter by type. Standard types in Zuul are "pre" for pre-routing filtering,
- * "route" for routing to an origin, "post" for post-routing filters, "error" for error handling.
- * We also support a "static" type for static responses see  StaticResponseFilter.
- * <p/>
+ * Base abstract class for ZuulFilters. The base class defines abstract methods to define: filterType() - to classify a
+ * filter by type. Standard types in Zuul are "pre" for pre-routing filtering, "route" for routing to an origin, "post"
+ * for post-routing filters, "error" for error handling. We also support a "static" type for static responses see
+ * StaticResponseFilter.
+ * <p>
  * filterOrder() must also be defined for a filter. Filters may have the same  filterOrder if precedence is not
  * important for a filter. filterOrders do not need to be sequential.
- * <p/>
+ * <p>
  * ZuulFilters may be disabled using Archaius Properties.
- * <p/>
- * By default ZuulFilters are static; they don't carry state. This may be overridden by overriding the isStaticFilter() property to false
+ * <p>
+ * By default ZuulFilters are static; they don't carry state. This may be overridden by overriding the isStaticFilter()
+ * property to false
  *
- * @author Mikey Cohen
- *         Date: 10/26/11
- *         Time: 4:29 PM
+ * @author Mikey Cohen Date: 10/26/11 Time: 4:29 PM
  */
-public abstract class BaseFilter<I extends ZuulMessage, O extends ZuulMessage> implements ZuulFilter<I,O>
-{
+public abstract class BaseFilter<I extends ZuulMessage, O extends ZuulMessage> implements ZuulFilter<I, O> {
+
     private final String baseName;
     private final AtomicInteger concurrentCount;
     private final Counter concurrencyRejections;
-
     private final CachedDynamicBooleanProperty filterDisabled;
-    private final CachedDynamicIntProperty filterConcurrencyLimit;
-
-    private static final CachedDynamicBooleanProperty concurrencyProtectEnabled = new CachedDynamicBooleanProperty("zuul.filter.concurrency.protect.enabled", true);
-
+    protected final CachedDynamicIntProperty filterConcurrencyCustom;
+    protected final CachedDynamicIntProperty filterConcurrencyDefault;
+    private final CachedDynamicBooleanProperty concurrencyProtectionEnabled;
+    private static final int DEFAULT_FILTER_CONCURRENCY_LIMIT = 4000;
 
     protected BaseFilter() {
-        baseName = this.getClass().getSimpleName() + "." + filterType().toString();
+        baseName = getClass().getSimpleName() + "." + filterType();
         concurrentCount = SpectatorUtils.newGauge("zuul.filter.concurrency.current", baseName, new AtomicInteger(0));
         concurrencyRejections = SpectatorUtils.newCounter("zuul.filter.concurrency.rejected", baseName);
         filterDisabled = new CachedDynamicBooleanProperty(disablePropertyName(), false);
-        filterConcurrencyLimit = new CachedDynamicIntProperty(maxConcurrencyPropertyName(), 4000);
+        concurrencyProtectionEnabled =
+                new CachedDynamicBooleanProperty("zuul.filter.concurrency.protect.enabled", true);
+        filterConcurrencyDefault =
+                new CachedDynamicIntProperty("zuul.filter.concurrency.limit.default", DEFAULT_FILTER_CONCURRENCY_LIMIT);
+        filterConcurrencyCustom =
+                new CachedDynamicIntProperty(maxConcurrencyPropertyName(), DEFAULT_FILTER_CONCURRENCY_LIMIT);
     }
 
     @Override
     public String filterName() {
-        return this.getClass().getName();
+        return getClass().getName();
     }
 
     @Override
-    public boolean overrideStopFilterProcessing()
-    {
+    public boolean overrideStopFilterProcessing() {
         return false;
     }
 
     /**
      * The name of the Archaius property to disable this filter. by default it is zuul.[classname].[filtertype].disable
-     *
-     * @return
      */
     public String disablePropertyName() {
         return "zuul." + baseName + ".disable";
     }
 
     /**
-     * The name of the Archaius property for this filter's max concurrency. by default it is zuul.[classname].[filtertype].concurrency.limit
-     *
-     * @return
+     * The name of the Archaius property for this filter's max concurrency. by default it is
+     * zuul.[classname].[filtertype].concurrency.limit
      */
     public String maxConcurrencyPropertyName() {
         return "zuul." + baseName + ".concurrency.limit";
     }
 
     /**
-     * If true, the filter has been disabled by archaius and will not be run
-     *
-     * @return
+     * If true, the filter has been disabled by archaius and will not be run.
      */
     @Override
     public boolean isDisabled() {
@@ -109,20 +98,17 @@ public abstract class BaseFilter<I extends ZuulMessage, O extends ZuulMessage> i
     }
 
     @Override
-    public O getDefaultOutput(I input)
-    {
-        return (O)input;
+    public O getDefaultOutput(I input) {
+        return (O) input;
     }
 
     @Override
-    public FilterSyncType getSyncType()
-    {
+    public FilterSyncType getSyncType() {
         return FilterSyncType.ASYNC;
     }
 
     @Override
-    public String toString()
-    {
+    public String toString() {
         return String.valueOf(filterType()) + ":" + String.valueOf(filterName());
     }
 
@@ -138,12 +124,17 @@ public abstract class BaseFilter<I extends ZuulMessage, O extends ZuulMessage> i
 
     @Override
     public void incrementConcurrency() throws ZuulFilterConcurrencyExceededException {
-        final int limit = filterConcurrencyLimit.get();
-        if ((concurrencyProtectEnabled.get()) && (concurrentCount.get() >= limit)) {
+        int limit = calculateConcurency();
+        if (concurrencyProtectionEnabled.get() && (concurrentCount.get() >= limit)) {
             concurrencyRejections.increment();
             throw new ZuulFilterConcurrencyExceededException(this, limit);
         }
         concurrentCount.incrementAndGet();
+    }
+
+    protected int calculateConcurency() {
+        int customLimit = filterConcurrencyCustom.get();
+        return customLimit != DEFAULT_FILTER_CONCURRENCY_LIMIT ? customLimit : filterConcurrencyDefault.get();
     }
 
     @Override
@@ -151,50 +142,7 @@ public abstract class BaseFilter<I extends ZuulMessage, O extends ZuulMessage> i
         concurrentCount.decrementAndGet();
     }
 
-    public static class TestUnit {
-        @Mock
-        private BaseFilter f1;
-        @Mock
-        private BaseFilter f2;
-        @Mock
-        private ZuulMessage req;
-
-        @Before
-        public void before() {
-            MockitoAnnotations.initMocks(this);
-        }
-
-
-        @Test
-        public void testShouldFilter() {
-            class TestZuulFilter extends BaseSyncFilter
-            {
-                @Override
-                public int filterOrder() {
-                    return 0;
-                }
-
-                @Override
-                public FilterType filterType() {
-                    return FilterType.INBOUND;
-                }
-
-                @Override
-                public boolean shouldFilter(ZuulMessage req) {
-                    return false;
-                }
-
-                @Override
-                public ZuulMessage apply(ZuulMessage req) {
-                    return null;
-                }
-            }
-
-            TestZuulFilter tf1 = spy(new TestZuulFilter());
-            TestZuulFilter tf2 = spy(new TestZuulFilter());
-
-            when(tf1.shouldFilter(req)).thenReturn(true);
-            when(tf2.shouldFilter(req)).thenReturn(false);
-        }
+    public int getConcurrency() {
+        return concurrentCount.get();
     }
 }

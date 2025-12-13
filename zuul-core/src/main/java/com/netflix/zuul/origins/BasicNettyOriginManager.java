@@ -18,9 +18,8 @@ package com.netflix.zuul.origins;
 
 import com.netflix.spectator.api.Registry;
 import com.netflix.zuul.context.SessionContext;
-
-import javax.inject.Inject;
-import javax.inject.Singleton;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -34,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class BasicNettyOriginManager implements OriginManager<BasicNettyOrigin> {
 
     private final Registry registry;
-    private final ConcurrentHashMap<String, BasicNettyOrigin> originMappings;
+    private final ConcurrentHashMap<OriginName, BasicNettyOrigin> originMappings;
 
     @Inject
     public BasicNettyOriginManager(Registry registry) {
@@ -43,12 +42,12 @@ public class BasicNettyOriginManager implements OriginManager<BasicNettyOrigin> 
     }
 
     @Override
-    public BasicNettyOrigin getOrigin(String name, String vip, String uri, SessionContext ctx) {
-        return originMappings.computeIfAbsent(name, n -> createOrigin(name, vip, uri, false, ctx));
+    public BasicNettyOrigin getOrigin(OriginName originName, String uri, SessionContext ctx) {
+        return originMappings.computeIfAbsent(originName, n -> createOrigin(originName, uri, ctx));
     }
 
     @Override
-    public BasicNettyOrigin createOrigin(String name, String vip, String uri, boolean useFullVipName, SessionContext ctx) {
-        return new BasicNettyOrigin(name, vip, registry);
+    public BasicNettyOrigin createOrigin(OriginName originName, String uri, SessionContext ctx) {
+        return new BasicNettyOrigin(originName, registry);
     }
 }

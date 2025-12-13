@@ -15,24 +15,27 @@
  */
 package com.netflix.zuul.util;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Strings;
 import com.netflix.zuul.message.Headers;
 import com.netflix.zuul.message.ZuulMessage;
 import com.netflix.zuul.message.http.HttpHeaderNames;
 import com.netflix.zuul.message.http.HttpRequestInfo;
-import org.apache.commons.lang3.StringUtils;
-import org.junit.Test;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http2.Http2StreamChannel;
+import java.util.Locale;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static org.junit.Assert.*;
 
 /**
  * User: Mike Smith
  * Date: 4/28/15
  * Time: 11:05 PM
  */
-public class HttpUtils
-{
+public class HttpUtils {
     private static final Logger LOG = LoggerFactory.getLogger(HttpUtils.class);
     private static final char[] MALICIOUS_HEADER_CHARS = {'\r', '\n'};
 
@@ -45,9 +48,8 @@ public class HttpUtils
      * @param request <code>HttpRequestMessage</code>
      * @return <code>String</code> IP address
      */
-    public static String getClientIP(HttpRequestInfo request)
-    {
-        final String xForwardedFor = request.getHeaders().getFirst(HttpHeaderNames.X_FORWARDED_FOR);
+    public static String getClientIP(HttpRequestInfo request) {
+        String xForwardedFor = request.getHeaders().getFirst(HttpHeaderNames.X_FORWARDED_FOR);
         String clientIP;
         if (xForwardedFor == null) {
             clientIP = request.getClientIp();
@@ -68,7 +70,7 @@ public class HttpUtils
             return null;
         }
         xForwardedFor = xForwardedFor.trim();
-        String tokenized[] = xForwardedFor.split(",");
+        String tokenized[] = xForwardedFor.split(",", -1);
         if (tokenized.length == 0) {
             return null;
         } else {
@@ -76,24 +78,22 @@ public class HttpUtils
         }
     }
 
-    /**
-     * return true if the client requested gzip content
-     *
-     * @param contentEncoding a <code>String</code> value
-     * @return true if the content-encoding param containg gzip
-     */
-    public static boolean isGzipped(String contentEncoding) {
-        return contentEncoding.contains("gzip");
+    @VisibleForTesting
+    static boolean isCompressed(String contentEncoding) {
+        return contentEncoding.contains(HttpHeaderValues.GZIP.toString())
+                || contentEncoding.contains(HttpHeaderValues.DEFLATE.toString())
+                || contentEncoding.contains(HttpHeaderValues.BR.toString())
+                || contentEncoding.contains(HttpHeaderValues.COMPRESS.toString());
     }
 
-    public static boolean isGzipped(Headers headers) {
+    public static boolean isCompressed(Headers headers) {
         String ce = headers.getFirst(HttpHeaderNames.CONTENT_ENCODING);
-        return ce != null && isGzipped(ce);
+        return ce != null && isCompressed(ce);
     }
 
     public static boolean acceptsGzip(Headers headers) {
         String ae = headers.getFirst(HttpHeaderNames.ACCEPT_ENCODING);
-        return ae != null && isGzipped(ae);
+        return ae != null && ae.contains(HttpHeaderValues.GZIP.toString());
     }
 
     /**
@@ -102,40 +102,41 @@ public class HttpUtils
      * @param input - decoded header string
      * @return - clean header string
      */
-    public static String stripMaliciousHeaderChars(String input) 
-    {
+    public static String stripMaliciousHeaderChars(@Nullable String input) {
+        if (input == null) {
+            return null;
+        }
+        // TODO(carl-mastrangelo): implement this more efficiently.
         for (char c : MALICIOUS_HEADER_CHARS) {
-            input = StringUtils.remove(input, c);
+            if (input.indexOf(c) != -1) {
+                input = input.replace(Character.toString(c), "");
+            }
         }
         return input;
     }
 
-
-    public static boolean hasNonZeroContentLengthHeader(ZuulMessage msg)
-    {
-        final Integer contentLengthVal = getContentLengthIfPresent(msg);
-        return (contentLengthVal != null) && (contentLengthVal.intValue() > 0);
+    public static boolean hasNonZeroContentLengthHeader(ZuulMessage msg) {
+        Integer contentLengthVal = getContentLengthIfPresent(msg);
+        return (contentLengthVal != null) && (contentLengthVal > 0);
     }
 
-    public static Integer getContentLengthIfPresent(ZuulMessage msg)
-    {
-        final String contentLengthValue = msg.getHeaders().getFirst(com.netflix.zuul.message.http.HttpHeaderNames.CONTENT_LENGTH);
-        if (StringUtils.isNotEmpty(contentLengthValue) && StringUtils.isNumeric(contentLengthValue)) {
+    public static Integer getContentLengthIfPresent(ZuulMessage msg) {
+        String contentLengthValue =
+                msg.getHeaders().getFirst(com.netflix.zuul.message.http.HttpHeaderNames.CONTENT_LENGTH);
+        if (!Strings.isNullOrEmpty(contentLengthValue)) {
             try {
                 return Integer.valueOf(contentLengthValue);
-            }
-            catch (NumberFormatException e) {
-                LOG.info("Invalid Content-Length header value on request. " +
-                        "value = " + String.valueOf(contentLengthValue));
+            } catch (NumberFormatException e) {
+                LOG.info("Invalid Content-Length header value on request. " + "value = {}", contentLengthValue, e);
             }
         }
         return null;
     }
 
     public static Integer getBodySizeIfKnown(ZuulMessage msg) {
-        final Integer bodySize = getContentLengthIfPresent(msg);
+        Integer bodySize = getContentLengthIfPresent(msg);
         if (bodySize != null) {
-            return bodySize.intValue();
+            return bodySize;
         }
         if (msg.hasCompleteBody()) {
             return msg.getBodyLength();
@@ -143,42 +144,27 @@ public class HttpUtils
         return null;
     }
 
-    public static boolean hasChunkedTransferEncodingHeader(ZuulMessage msg)
-    {
+    public static boolean hasChunkedTransferEncodingHeader(ZuulMessage msg) {
         boolean isChunked = false;
         String teValue = msg.getHeaders().getFirst(com.netflix.zuul.message.http.HttpHeaderNames.TRANSFER_ENCODING);
-        if (StringUtils.isNotEmpty(teValue)) {
-            isChunked = "chunked".equals(teValue.toLowerCase());
+        if (!Strings.isNullOrEmpty(teValue)) {
+            isChunked = teValue.toLowerCase(Locale.ROOT).equals("chunked");
         }
         return isChunked;
     }
 
+    /**
+     * If http/1 then will always want to just use ChannelHandlerContext.channel(), but for http/2
+     * will want the parent channel (as the child channel is different for each h2 stream).
+     */
+    public static Channel getMainChannel(ChannelHandlerContext ctx) {
+        return getMainChannel(ctx.channel());
+    }
 
-    public static class UnitTest {
-
-        @Test
-        public void detectsGzip() {
-            assertTrue(HttpUtils.isGzipped("gzip"));
+    public static Channel getMainChannel(Channel channel) {
+        if (channel instanceof Http2StreamChannel) {
+            return channel.parent();
         }
-
-        @Test
-        public void detectsNonGzip() {
-            assertFalse(HttpUtils.isGzipped("identity"));
-        }
-
-        @Test
-        public void detectsGzipAmongOtherEncodings() {
-            assertTrue(HttpUtils.isGzipped("gzip, deflate"));
-        }
-
-        @Test
-        public void stripMaliciousHeaderChars() {
-            assertEquals("something", HttpUtils.stripMaliciousHeaderChars("some\r\nthing"));
-            assertEquals("some thing", HttpUtils.stripMaliciousHeaderChars("some thing"));
-            assertEquals("something", HttpUtils.stripMaliciousHeaderChars("\nsome\r\nthing\r"));
-            assertEquals("", HttpUtils.stripMaliciousHeaderChars("\r"));
-            assertEquals("", HttpUtils.stripMaliciousHeaderChars(""));
-            assertNull(HttpUtils.stripMaliciousHeaderChars(null));
-        }
+        return channel;
     }
 }

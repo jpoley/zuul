@@ -29,9 +29,11 @@ import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
  * Created by saroskar on 10/10/16.
  */
 public enum PushProtocol {
-
     WEBSOCKET {
         @Override
+        // The alternative object for HANDSHAKE_COMPLETE is not publicly visible, so disable deprecation warnings.  In
+        // the future, it may be possible to not fire this even and remove the suppression.
+        @SuppressWarnings("deprecation")
         public Object getHandshakeCompleteEvent() {
             return WebSocketServerProtocolHandler.ServerHandshakeStateEvent.HANDSHAKE_COMPLETE;
         }
@@ -43,7 +45,7 @@ public enum PushProtocol {
 
         @Override
         public ChannelFuture sendPushMessage(ChannelHandlerContext ctx, ByteBuf mesg) {
-            final TextWebSocketFrame wsf = new TextWebSocketFrame(mesg);
+            TextWebSocketFrame wsf = new TextWebSocketFrame(mesg);
             return ctx.channel().writeAndFlush(wsf);
         }
 
@@ -61,7 +63,6 @@ public enum PushProtocol {
         public Object serverClosingConnectionMessage(int statusCode, String reasonText) {
             return new CloseWebSocketFrame(statusCode, reasonText);
         }
-
     },
 
     SSE {
@@ -82,7 +83,7 @@ public enum PushProtocol {
 
         @Override
         public ChannelFuture sendPushMessage(ChannelHandlerContext ctx, ByteBuf mesg) {
-            final ByteBuf newBuff = ctx.alloc().buffer();
+            ByteBuf newBuff = ctx.alloc().buffer();
             newBuff.ensureWritable(SSE_PREAMBLE.length());
             newBuff.writeCharSequence(SSE_PREAMBLE, Charsets.UTF_8);
             newBuff.ensureWritable(mesg.writableBytes());
@@ -93,11 +94,11 @@ public enum PushProtocol {
             return ctx.channel().writeAndFlush(newBuff);
         }
 
-        private static final String  SSE_PING = "event: ping\r\ndata: ping\r\n\r\n";
+        private static final String SSE_PING = "event: ping\r\ndata: ping\r\n\r\n";
 
         @Override
         public ChannelFuture sendPing(ChannelHandlerContext ctx) {
-            final ByteBuf newBuff = ctx.alloc().buffer();
+            ByteBuf newBuff = ctx.alloc().buffer();
             newBuff.ensureWritable(SSE_PING.length());
             newBuff.writeCharSequence(SSE_PING, Charsets.UTF_8);
             return ctx.channel().writeAndFlush(newBuff);
@@ -112,17 +113,19 @@ public enum PushProtocol {
         public Object serverClosingConnectionMessage(int statusCode, String reasonText) {
             return "event: close\r\ndata: " + statusCode + " " + reasonText + "\r\n\r\n";
         }
-
     };
 
     public final void sendErrorAndClose(ChannelHandlerContext ctx, int statusCode, String reasonText) {
-        final Object mesg = serverClosingConnectionMessage(statusCode, reasonText);
+        Object mesg = serverClosingConnectionMessage(statusCode, reasonText);
         ctx.writeAndFlush(mesg).addListener(ChannelFutureListener.CLOSE);
     }
 
     public abstract Object getHandshakeCompleteEvent();
+
     public abstract String getPath();
+
     public abstract ChannelFuture sendPushMessage(ChannelHandlerContext ctx, ByteBuf mesg);
+
     public abstract ChannelFuture sendPing(ChannelHandlerContext ctx);
     /**
      * Application level protocol for asking client to close connection
@@ -131,8 +134,6 @@ public enum PushProtocol {
     public abstract Object goAwayMessage();
     /**
      * Message server sends to the client just before it force closes connection from its side
-     * @return
      */
     public abstract Object serverClosingConnectionMessage(int statusCode, String reasonText);
-
 }

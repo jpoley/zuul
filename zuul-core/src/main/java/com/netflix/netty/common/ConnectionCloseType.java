@@ -17,23 +17,20 @@
 package com.netflix.netty.common;
 
 import io.netty.channel.Channel;
-import io.netty.util.AttributeKey;
 
 /**
  * User: michaels@netflix.com
  * Date: 2/8/17
  * Time: 2:04 PM
  */
-public enum ConnectionCloseType
-{
-    IMMEDIATE, GRACEFUL, DELAYED_GRACEFUL;
+public enum ConnectionCloseType {
+    IMMEDIATE,
+    GRACEFUL,
+    DELAYED_GRACEFUL;
 
-
-    private static final AttributeKey<ConnectionCloseType> ATTR_CLOSE_TYPE = AttributeKey.newInstance("_conn_close_type");
-
-    public static ConnectionCloseType fromChannel(Channel ch)
-    {
-        ConnectionCloseType type = ch.attr(ATTR_CLOSE_TYPE).get();
+    public static ConnectionCloseType fromChannel(Channel ch) {
+        ConnectionCloseType type =
+                ch.attr(ConnectionCloseChannelAttributes.CLOSE_TYPE).get();
         if (type == null) {
             // Default to immediate.
             type = ConnectionCloseType.IMMEDIATE;
@@ -41,8 +38,7 @@ public enum ConnectionCloseType
         return type;
     }
 
-    public static void setForChannel(Channel ch, ConnectionCloseType type)
-    {
-        ch.attr(ATTR_CLOSE_TYPE).set(type);
+    public static void setForChannel(Channel ch, ConnectionCloseType type) {
+        ch.attr(ConnectionCloseChannelAttributes.CLOSE_TYPE).set(type);
     }
 }

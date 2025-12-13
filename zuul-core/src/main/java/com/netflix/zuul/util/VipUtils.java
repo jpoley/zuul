@@ -16,45 +16,39 @@
 
 package com.netflix.zuul.util;
 
-import org.junit.Test;
-
-import static org.junit.Assert.assertEquals;
-
-public class VipUtils
-{
-    public static String getVIPPrefix(String vipAddress)
-    {
-        String vipHost = vipAddress.split(":")[0];
-        return vipHost.split("\\.")[0];
+public final class VipUtils {
+    public static String getVIPPrefix(String vipAddress) {
+        for (int i = 0; i < vipAddress.length(); i++) {
+            char c = vipAddress.charAt(i);
+            if (c == '.' || c == ':') {
+                return vipAddress.substring(0, i);
+            }
+        }
+        return vipAddress;
     }
 
-    public static String extractAppNameFromVIP(String vipAddress)
-    {
+    /**
+     * Use {@link #extractUntrustedAppNameFromVIP} instead.
+     */
+    @Deprecated
+    public static String extractAppNameFromVIP(String vipAddress) {
         String vipPrefix = getVIPPrefix(vipAddress);
-        return vipPrefix.split("-")[0];
+        return vipPrefix.split("-", -1)[0];
     }
 
-    public static class UnitTest
-    {
-        @Test(expected = NullPointerException.class)
-        public void testGetVIPPrefix()
-        {
-            assertEquals("api-test", VipUtils.getVIPPrefix("api-test.netflix.net:7001"));
-            assertEquals("api-test", VipUtils.getVIPPrefix("api-test.netflix.net"));
-            assertEquals("api-test", VipUtils.getVIPPrefix("api-test:7001"));
-            assertEquals("api-test", VipUtils.getVIPPrefix("api-test"));
-            assertEquals("", VipUtils.getVIPPrefix(""));
-            VipUtils.getVIPPrefix(null);
+    /**
+     * Attempts to derive an app name from the VIP.   Because the VIP is an arbitrary collection of characters, the
+     * value is just a best guess and not suitable for security purposes.
+     */
+    public static String extractUntrustedAppNameFromVIP(String vipAddress) {
+        for (int i = 0; i < vipAddress.length(); i++) {
+            char c = vipAddress.charAt(i);
+            if (c == '-' || c == '.' || c == ':') {
+                return vipAddress.substring(0, i);
+            }
         }
-
-        @Test(expected = NullPointerException.class)
-        public void testExtractAppNameFromVIP()
-        {
-            assertEquals("api", VipUtils.extractAppNameFromVIP("api-test.netflix.net:7001"));
-            assertEquals("api", VipUtils.extractAppNameFromVIP("api-test-blah.netflix.net:7001"));
-            assertEquals("api", VipUtils.extractAppNameFromVIP("api"));
-            assertEquals("", VipUtils.extractAppNameFromVIP(""));
-            VipUtils.extractAppNameFromVIP(null);
-        }
+        return vipAddress;
     }
+
+    private VipUtils() {}
 }
